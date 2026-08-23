@@ -32,8 +32,10 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Liveness probe. Returns 200 with a small JSON body and produces a trace span
-/// via the `TraceLayer` middleware.
+/// Liveness probe. Returns 200 with a small JSON body. `#[instrument]` creates
+/// an INFO-level span so the request is exported to OTLP as a trace regardless
+/// of tower-http's (DEBUG-level) request span.
+#[tracing::instrument(name = "health", level = "info")]
 async fn health() -> Json<Value> {
     tracing::info!("health check");
     Json(json!({ "status": "ok", "service": "paybound-gateway" }))
