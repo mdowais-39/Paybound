@@ -213,6 +213,13 @@ impl Storefront {
         .await
         .map_err(db)?;
 
+        AuditLedger::new(&self.pool)
+            .append(
+                session_id,
+                domain::AuditEventType::CartBuilt,
+                json!({ "cart_id": cart_id, "total_paise": total, "n_items": line_items.len() }),
+            )
+            .await?;
         repos::set_session_state(&self.pool, session_id, "CART_BUILT").await?;
 
         Ok(CartView {

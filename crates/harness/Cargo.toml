@@ -1,0 +1,24 @@
+[package]
+name = "harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "walking-skeleton"
+path = "src/walking_skeleton.rs"
+
+[dependencies]
+common.workspace = true
+domain.workspace = true
+kernel.workspace = true
+ledger.workspace = true
+reserve.workspace = true
+storefront-mcp.workspace = true
+execution.workspace = true
+razorpay-client.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+time.workspace = true
+tokio.workspace = true

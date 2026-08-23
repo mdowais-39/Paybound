@@ -89,3 +89,18 @@ block passes and is shown.
 - [x] Failure branch clean — `failed_webhook_records_clean_failure_without_completing` (outcome=failed, session not completed). Live failure = pay a link with `failure@razorpay`.
 - Note: live webhook delivery from Razorpay needs a tunnel + dashboard webhook secret (joint step); receiver proven via signed events.
 - Whole workspace: **43 tests pass** (execution 4, razorpay-client 1, gateway 1 added); offline `clippy -D warnings` + `fmt` clean.
+
+## Phase 5 — Walking skeleton (hard milestone) — ✅ DONE
+
+**Built:**
+- `crates/harness` (`walking-skeleton` bin): one command runs a hardcoded happy-path purchase through the ENTIRE spine — signed Intent Mandate → `create_cart` → `checkout` (kernel gate) → execution (REAL Razorpay payment link) → webhook receipt → session COMPLETED → renders + verifies the hash-chained audit trail.
+- `scripts/walking_skeleton.sh` wrapper.
+- Enhancement: `storefront.create_cart` now emits a `cart_built` audit event (complete chain).
+
+**STOP-AND-TEST results:**
+- [x] One command executes a full purchase end to end against real Razorpay test mode. Real payment links created (`plink_TTL4Jom1xpXiXG`, `plink_TTL4Yx6FoQ0fWy`).
+- [x] Prints a complete, hash-verified audit chain: `session_created → cart_built → gate_decision → token_issued → payment_effect(pending) → payment_effect(success)`, each linked to the prior hash; **`verify_chain() = PASS`**.
+- [x] Works reliably **twice in a row**.
+- Whole workspace still **43 tests pass**; offline `clippy -D warnings` + `fmt` clean.
+
+**MIDPOINT MILESTONE REACHED — the system is demoable end-to-end from here on.**

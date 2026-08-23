@@ -10,6 +10,7 @@ members = [
     "crates/execution",
     "crates/storefront-mcp",
     "crates/gateway",
+    "crates/harness",
 ]
 
 [workspace.package]
@@ -72,6 +73,7 @@ reserve = { path = "crates/reserve" }
 kernel = { path = "crates/kernel" }
 razorpay-client = { path = "crates/razorpay-client" }
 execution = { path = "crates/execution" }
+storefront-mcp = { path = "crates/storefront-mcp" }
 
 [profile.release]
 opt-level = 3

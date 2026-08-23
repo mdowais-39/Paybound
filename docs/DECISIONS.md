@@ -54,3 +54,10 @@ choice, with a one-line reason. Newest at the bottom of each phase.
 - **Delegated token** = random 32-byte hex, scoped to one `payment_effect` (single-use); reuse is blocked by idempotency. This is the Shared-Payment-Token pattern (our own token, not a Razorpay recurring token).
 - **No Razorpay `revoke_token`/AutoPay.** AutoPay recurring needs account enablement + a mandate-approval flow. Our revocation is at our own layer (Intent Mandate + Reserve-Pay ledger), which is where "kill the authority" actually lives in this architecture.
 - **Live webhook delivery is a joint step:** to have the REAL `payment_link.paid` webhook reach the local gateway, a tunnel (cloudflared/ngrok) + a dashboard webhook with `RAZORPAY_WEBHOOK_SECRET` must be configured. The receiver logic itself is fully proven with signed synthetic events.
+
+## Phase 5 — Walking skeleton (milestone)
+
+- **Dedicated `harness` bin crate** (`walking-skeleton`) wires the real storefront + execution + ledger into one command. It's also the natural home for the Phase 11 scenario runner.
+- **Only the agent and the webhook receipt are stood in.** The webhook receipt is `exec.on_payment_paid(razorpay_ref)` — the exact code the HMAC-verified webhook handler runs — so nothing on the money path is mocked. The payment link is a REAL test-mode object; in the live venue the real `payment_link.paid` webhook fires instead.
+- **Added a `cart_built` audit event to `storefront.create_cart`** so the end-to-end chain is complete: `session_created → cart_built → gate_decision → token_issued → payment_effect(pending) → payment_effect(success)`. `session_created` is appended by the caller at delegation (the agent takes this over in Phase 6).
+- **Reliability:** runs cleanly twice in a row (fresh session + real link each run; `verify_chain` PASS both times).
