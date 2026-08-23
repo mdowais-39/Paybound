@@ -14,13 +14,15 @@ block passes and is shown.
 - CI: `.github/workflows/ci.yml` (cargo fmt/clippy/test + ruff/pytest).
 - `.gitignore`, `.env.example`, `requirements.txt`, `pyproject.toml`, Python smoke test.
 
-**Test results so far:**
+**Test results so far (local, credential-independent):**
 - `cargo check --workspace` → clean (all 9 crates compile).
 - `cargo test -p common` → **6 passed** (canonical key-order invariance, sign/verify roundtrip, tamper rejection, config defaults).
-- `cargo clippy --workspace` → clean, no warnings.
+- `cargo clippy --workspace` → clean, no warnings. `cargo fmt --check` → clean.
+- `ruff check services` → clean; `pytest services` → **2 passed** (in the `paybound` conda env).
+- `docker compose config` → compose file valid.
+- **git:** independent repo initialised at `paybound/`, first commit `fdc4d21` (53 files, no secrets/`target/` staged). Remote pending the GitHub URL.
 
-**Blocked on / pending before Phase 0 is DONE (Part G):**
+**Blocked on / pending before Phase 0 is DONE (Part G) — needs Owais:**
 - [ ] Razorpay test keys + LLM API key → finish `.env`, run a Razorpay `fetch_payment`-equivalent call.
 - [ ] Docker Desktop running → `docker compose up`, confirm `/health` 200 + trace visible in Grafana.
-- [ ] Public GitHub repo URL → push, confirm CI green on first commit.
-- [ ] Python deps installed into `paybound` env → confirm `ruff` + `pytest` green locally.
+- [ ] Public GitHub repo URL → add remote, push, confirm CI green on first commit.
