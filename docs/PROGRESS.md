@@ -3,7 +3,7 @@
 Phase completions with test results. A phase is only "done" when its STOP-AND-TEST
 block passes and is shown.
 
-## Phase 0 — Foundations & scaffolding — IN PROGRESS
+## Phase 0 — Foundations & scaffolding — ✅ DONE
 
 **Built (credential-independent):**
 - Cargo workspace with all 9 crates; Python service tree; `proto/ migrations/ data/ workflows/ eval/ deploy/ docs/`.
@@ -26,6 +26,6 @@ block passes and is shown.
 - [x] `docker compose up` → all 5 core services up (Postgres & Redis healthy, Collector/Tempo/Grafana running).
 - [x] `/health` → HTTP 200; trace exported gateway → OTLP → collector (5 spans) → **Tempo returns it** (`rootServiceName=paybound-gateway`, `rootTraceName=health`), so it's visible in Grafana (Tempo datasource). See DECISIONS.md for the TraceLayer-level fix.
 - [x] Public repo pushed (github.com/mdowais-39/Paybound); **CI green** on commit `de96d3c` (success).
-- [ ] Razorpay `fetch_payment`-equivalent call — pending test keys (Owais fetching).
+- [x] Razorpay test-mode auth: `GET /v1/payments` → 200; `POST /v1/orders` → 200 (created `order_TTGqUpGI9mtotK`, ₹500 = 50000 paise). Read + write both confirmed on the test rail, de-risking Phase 4.
 
-Phase 0 is complete except the Razorpay test call, which unblocks the moment the keys land.
+**Phase 0 DONE.** All four STOP-AND-TEST checks pass. (LLM API key deferred — not needed until Phase 6; does not block Phases 1–5.)
