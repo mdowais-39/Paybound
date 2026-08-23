@@ -2,8 +2,10 @@
 //! kinds. Pure types with no I/O — used by the kernel (Phase 2), the ledger,
 //! and the gateway alike, so the contract can never drift between them.
 
+pub mod mandate;
 pub mod money;
 
+pub use mandate::{Cart, CartLineItem, CartMandate, IntentMandate, PaymentMandate};
 pub use money::{Paise, AFA_THRESHOLD_PAISE};
 
 use std::fmt;

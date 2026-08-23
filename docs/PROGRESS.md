@@ -44,3 +44,17 @@ block passes and is shown.
 - [x] Append 5 audit entries + `verify_chain` passes; tampering entry 3's payload → `verify_chain` fails; rewriting a stored hash → fails. (`cargo test -p ledger` → **5 passed**: 2 pure hash + 3 integration.)
 - [x] Catalog holds ingested products with ₹ prices — `SELECT` returns 1000 items, 144 categories, ₹439–₹14,356.
 - Full workspace: **15 tests pass** (common 6, domain 4, ledger 5); offline `fmt`+`clippy -D warnings` clean.
+
+## Phase 2 — Mandate & Consent Kernel + Reserve-Pay ledger — ✅ DONE
+
+**Built:**
+- `domain::mandate` — `Cart`/`CartLineItem` (with `recomputed_total` + `cart_hash`), `IntentMandate` (ed25519 `new_signed`/`verify_signature` over a canonical signing view), `CartMandate`, `PaymentMandate`.
+- `reserve` crate — the SIMULATED Reserve-Pay fund-block: `ReserveBlock` with `new/from_parts/debit/release/revoke`, Single-Block-Multi-Debit, ceiling invariant enforced.
+- `kernel` crate — pure `evaluate()` returning `Approved(Authorization) | Refused(RefusalReason)`; the 8-variant typed `RefusalReason` (+ `verdict()`/`as_str()`/`human_message()`); each bound as a named predicate (`check_ttl`, `check_cart_integrity`, `check_categories`, `check_merchant`).
+
+**STOP-AND-TEST results:**
+- [x] Pass **and** fail case for every `RefusalReason` — `cargo test -p kernel` → **11 passed** (happy path + all 8 reasons with adjacent passes + AFA boundary + verdict mapping).
+- [x] Property test: any debit sequence can never breach the reserve ceiling — `cargo test -p reserve` → **5 passed**.
+- [x] ₹15,001 → `RequiresHumanAFA`; ₹14,999 and exactly ₹15,000 → `Approved`.
+- [x] Tampered mandate signature → `SignatureInvalid`.
+- Kernel is pure (no I/O deps). Whole workspace: **33 tests pass**; offline `clippy -D warnings` + `fmt` clean.

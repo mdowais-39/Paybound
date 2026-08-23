@@ -11,10 +11,30 @@ use crate::error::AppError;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde_json::Value;
 
+// Re-exported so downstream crates name the crypto types through `common`,
+// keeping ed25519 a single-sourced dependency.
+pub use ed25519_dalek::{SigningKey as Ed25519SigningKey, VerifyingKey as Ed25519VerifyingKey};
+
 /// Generate a fresh ed25519 signing keypair.
 pub fn generate_keypair() -> SigningKey {
     let mut csprng = rand::rngs::OsRng;
     SigningKey::generate(&mut csprng)
+}
+
+/// Hex-encode a signing key's public (verifying) key — the identity stored on a
+/// mandate so the kernel can verify it later.
+pub fn verifying_key_hex(key: &SigningKey) -> String {
+    hex::encode(key.verifying_key().to_bytes())
+}
+
+/// Reconstruct a verifying key from its hex encoding.
+pub fn verifying_key_from_hex(hex_str: &str) -> Result<VerifyingKey, AppError> {
+    let bytes = hex::decode(hex_str)
+        .map_err(|e| AppError::Signature(format!("invalid pubkey hex: {e}")))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| AppError::Signature("public key must be 32 bytes".into()))?;
+    VerifyingKey::from_bytes(&arr).map_err(|e| AppError::Signature(format!("bad public key: {e}")))
 }
 
 /// Sign the canonical JSON bytes of a value, returning a hex-encoded signature.
