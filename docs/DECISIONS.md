@@ -43,3 +43,14 @@ choice, with a one-line reason. Newest at the bottom of each phase.
 - **`create_cart` prices come from the catalog, never the agent.** The agent passes item ids + quantities; the storefront looks up price/category/merchant from the DB and enforces single-merchant carts.
 - **Discovery surface:** `/.well-known/agents.txt` (robots-style pointer), `/.well-known/ard.json` (ARD manifest declaring tools + the signed-Intent-Mandate authority required), `/feed.json` (OpenAI/Google-style feed, prices in minor units), `/schema/{id}` (schema.org Product/Offer JSON-LD).
 - **`examples/seed_demo.rs`** creates a signed mandate + bound session against the real catalog — reused for the HTTP smoke test now and the Phase 5 walking skeleton.
+
+## Phase 4 — Execution plane + Razorpay
+
+- **Payment path = Payment Links.** Probed the account: S2S UPI create (`/payments/create/upi`) returns 404 (not enabled), so an automated PIN-less UPI charge isn't available. Payment Links ARE real, dashboard-visible, payable objects — so execution creates a real link and completion is driven by the real `payment_link.paid` webhook (live) or a correctly-HMAC-signed synthetic event (automated tests). Stated openly.
+- **Idempotency via DB-first claim, not Redis-only.** `authorize` does `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING` to atomically claim the key *before* creating the link — so a retry never creates a second link or double-charges, and there are no orphan links from a lost race. This is stronger than the prompt's Redis-only design; a Redis read-through cache is deferred to Phase 10. Verified live (same link on retry, `deduplicated=true`) and in tests.
+- **`PaymentGateway` trait** decouples execution from the network: real `RazorpayClient` impl for production, a fake for deterministic tests (idempotency, paid/failed handling).
+- **Webhook HMAC verified against the RAW body** (axum `Bytes` extractor, never re-serialized), constant-time compare via HMAC `verify_slice`. Bad signature → 401.
+- **Gateway refactored to lib+bin** so the webhook receiver is testable via `tower::oneshot`.
+- **Delegated token** = random 32-byte hex, scoped to one `payment_effect` (single-use); reuse is blocked by idempotency. This is the Shared-Payment-Token pattern (our own token, not a Razorpay recurring token).
+- **No Razorpay `revoke_token`/AutoPay.** AutoPay recurring needs account enablement + a mandate-approval flow. Our revocation is at our own layer (Intent Mandate + Reserve-Pay ledger), which is where "kill the authority" actually lives in this architecture.
+- **Live webhook delivery is a joint step:** to have the REAL `payment_link.paid` webhook reach the local gateway, a tunnel (cloudflared/ngrok) + a dashboard webhook with `RAZORPAY_WEBHOOK_SECRET` must be configured. The receiver logic itself is fully proven with signed synthetic events.

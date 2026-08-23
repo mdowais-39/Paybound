@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT effect_id, razorpay_ref, delegated_token FROM payment_effect\n             WHERE idempotency_key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "effect_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "razorpay_ref",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "delegated_token",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "4405eb9ec2e307c3d711c00f339d9532cab4f11ede3e040acf816f50a999cadf"
+}

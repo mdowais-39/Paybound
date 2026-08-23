@@ -1,42 +1,47 @@
-//! Paybound gateway: public API + Razorpay webhook receiver.
-//!
-//! Phase 0 exposes only `/health` with tracing middleware, to prove the
-//! service boots, binds, and emits a span per request. The webhook receiver
-//! and the audit read-API land in Phases 4 and 9.
+//! Paybound gateway binary: wires the real Razorpay client + execution plane
+//! into the router and serves it.
 
-use axum::{routing::get, Json, Router};
 use common::{config::Config, telemetry};
-use serde_json::{json, Value};
-use tower_http::trace::TraceLayer;
+use execution::{ExecConfig, ExecutionPlane};
+use gateway::{build_router, AppState};
+use razorpay_client::RazorpayClient;
+use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::load().unwrap_or_else(|e| {
         eprintln!("config load failed ({e}); using defaults");
-        // Fall back to defaults so `/health` works even before `.env` exists.
-        serde_json::from_value(json!({})).expect("default config")
+        serde_json::from_value(serde_json::json!({})).expect("default config")
     });
-
-    // Keep the guard alive for the process lifetime so spans flush on exit.
     let _telemetry = telemetry::init(&config.service_name, &config.otlp_endpoint);
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .layer(TraceLayer::new_for_http());
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&config.database_url)
+        .await?;
 
+    let key_id = std::env::var("RAZORPAY_KEY_ID").unwrap_or_default();
+    let key_secret = std::env::var("RAZORPAY_KEY_SECRET").unwrap_or_default();
+    let webhook_secret = std::env::var("RAZORPAY_WEBHOOK_SECRET").unwrap_or_default();
+    if key_id.is_empty() {
+        tracing::warn!(
+            "RAZORPAY_KEY_ID not set — payment authorization will fail until configured"
+        );
+    }
+
+    let client = RazorpayClient::new(key_id, key_secret);
+    let exec = ExecutionPlane::new(pool, client, ExecConfig::default());
+
+    let state = AppState {
+        exec: Arc::new(exec),
+        webhook_secret: Arc::new(webhook_secret),
+    };
+
+    let app = build_router(state);
     let addr = format!("0.0.0.0:{}", config.gateway_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "gateway listening");
-
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-/// Liveness probe. Returns 200 with a small JSON body. `#[instrument]` creates
-/// an INFO-level span so the request is exported to OTLP as a trace regardless
-/// of tower-http's (DEBUG-level) request span.
-#[tracing::instrument(name = "health", level = "info")]
-async fn health() -> Json<Value> {
-    tracing::info!("health check");
-    Json(json!({ "status": "ok", "service": "paybound-gateway" }))
 }

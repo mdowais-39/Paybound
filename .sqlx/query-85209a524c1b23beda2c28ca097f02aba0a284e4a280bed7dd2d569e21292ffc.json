@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE payment_effect SET razorpay_ref = $1 WHERE effect_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85209a524c1b23beda2c28ca097f02aba0a284e4a280bed7dd2d569e21292ffc"
+}

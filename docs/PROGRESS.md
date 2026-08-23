@@ -73,3 +73,19 @@ block passes and is shown.
 - [x] `checkout` in-budget → **Approved** (HTTP smoke + integration test); over-cap → **typed refusal** `over_per_txn_cap` (integration test).
 - [x] `agents.txt` served and valid; ard.json (5 tools, signed-mandate authority), feed.json (1000 products), schema.org JSON-LD all serve.
 - Whole workspace: **37 tests pass**; offline `clippy -D warnings` + `fmt` clean.
+
+## Phase 4 — Execution plane + Razorpay integration — ✅ DONE
+
+**Built:**
+- `razorpay-client`: typed REST client (`create_order`, `create_payment_link`, `fetch_payment_link`) behind a `PaymentGateway` trait; HMAC-SHA256 webhook verify/sign (raw-body, constant-time).
+- `execution`: `ExecutionPlane` — `authorize` issues a scoped single-use delegated token, creates a REAL payment link, writes `payment_effect` + audit (TokenIssued/PaymentEffect), moves session to PAYING; idempotent via DB `ON CONFLICT` claim. `on_payment_paid` (→ COMPLETED, running_spend += amount, idempotent) and `on_payment_failed` (clean failure, NO hallucinated success).
+- `gateway` (now lib+bin): `POST /webhooks/razorpay` — HMAC-verifies the raw body, dispatches paid/failed to the execution plane.
+- Examples: `execution/examples/live_authorize` (real API).
+
+**STOP-AND-TEST results:**
+- [x] Real test-mode payment created via the execution plane — `live_authorize` produced real link `plink_TTKwPsyOhJE0Zy` (payable URL, visible in the Razorpay dashboard).
+- [x] Duplicate call with same idempotency key does NOT double-charge — live (same link, `deduplicated=true`) + `duplicate_authorize_does_not_double_charge` (one link, one row).
+- [x] `payment_link.paid` webhook HMAC-verified (raw body) closes the session — gateway test (signed → 200 + COMPLETED; bad signature → 401).
+- [x] Failure branch clean — `failed_webhook_records_clean_failure_without_completing` (outcome=failed, session not completed). Live failure = pay a link with `failure@razorpay`.
+- Note: live webhook delivery from Razorpay needs a tunnel + dashboard webhook secret (joint step); receiver proven via signed events.
+- Whole workspace: **43 tests pass** (execution 4, razorpay-client 1, gateway 1 added); offline `clippy -D warnings` + `fmt` clean.

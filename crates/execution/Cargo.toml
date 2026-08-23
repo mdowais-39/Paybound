@@ -13,6 +13,24 @@ razorpay-client.workspace = true
 reserve.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sqlx.workspace = true
 uuid.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+rand.workspace = true
+hex.workspace = true
+sha2.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+common.workspace = true
+domain.workspace = true
+kernel.workspace = true
+ledger.workspace = true
+razorpay-client.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+time.workspace = true
+tokio.workspace = true

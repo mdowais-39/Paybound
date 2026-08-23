@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE payment_effect SET outcome = 'failed'\n             WHERE razorpay_ref = $1 AND outcome = 'pending'\n             RETURNING session_id, amount_paise",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount_paise",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "76a7ac25e723b394cd6d5858a0e95ed0d90206e16bb10315d5051c1528cbf5c9"
+}

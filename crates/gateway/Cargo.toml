@@ -4,17 +4,40 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "gateway"
 path = "src/main.rs"
 
 [dependencies]
 common.workspace = true
+execution.workspace = true
+razorpay-client.workspace = true
+ledger.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 tokio.workspace = true
+sqlx.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+common.workspace = true
+domain.workspace = true
+kernel.workspace = true
+ledger.workspace = true
+razorpay-client.workspace = true
+async-trait.workspace = true
+tower.workspace = true
+sqlx.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+tokio.workspace = true
