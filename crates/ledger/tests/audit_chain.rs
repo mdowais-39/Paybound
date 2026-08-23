@@ -18,6 +18,7 @@ async fn seed_session(pool: &PgPool) -> Uuid {
     let mandate = repos::create_intent_mandate(
         pool,
         NewIntentMandate {
+            mandate_id: Uuid::new_v4(),
             payer: "user_owais",
             budget_total_paise: 300_000, // ₹3,000
             per_txn_cap_paise: 300_000,

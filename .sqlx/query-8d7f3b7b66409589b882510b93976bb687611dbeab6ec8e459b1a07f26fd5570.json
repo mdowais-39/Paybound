@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO gate_decision (session_id, cart_id, verdict, rule_cited)\n         VALUES ($1, $2, $3, $4) RETURNING decision_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "decision_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8d7f3b7b66409589b882510b93976bb687611dbeab6ec8e459b1a07f26fd5570"
+}

@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT line_items, total_paise, merchant_id\n             FROM cart_mandate WHERE cart_id = $1 AND session_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "line_items",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "total_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "merchant_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "41771e1b929c82afdb8c38e414956244c2eb32a011447cc7bb68c2669e19775b"
+}

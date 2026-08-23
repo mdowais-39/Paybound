@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT mandate_id, payer, budget_total_paise, per_txn_cap_paise,\n                allowed_categories, allowed_merchants, ttl, nl_goal, public_key, signature\n         FROM intent_mandate WHERE mandate_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mandate_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "payer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "budget_total_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "per_txn_cap_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "allowed_categories",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "allowed_merchants",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "ttl",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "nl_goal",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "public_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "signature",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "363d474be4ef70fdfde5cfde06c17df2bdc00f0397f7fc7e31416e14c496501c"
+}

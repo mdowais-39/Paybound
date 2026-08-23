@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO intent_mandate\n           (payer, budget_total_paise, per_txn_cap_paise, allowed_categories,\n            allowed_merchants, ttl, nl_goal, public_key, signature)\n         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)\n         RETURNING mandate_id",
+  "query": "INSERT INTO intent_mandate\n           (mandate_id, payer, budget_total_paise, per_txn_cap_paise, allowed_categories,\n            allowed_merchants, ttl, nl_goal, public_key, signature)\n         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)\n         RETURNING mandate_id",
   "describe": {
     "columns": [
       {
@@ -11,6 +11,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Text",
         "Int8",
         "Int8",
@@ -26,5 +27,5 @@
       false
     ]
   },
-  "hash": "77bfa000b7e9e9da356705d3ccda7a0411a35173c01badea1d551b17bc0b99fb"
+  "hash": "0ce9746f0f2691ec1a9ab7345f00abed778d81dfeb1ff156db81fccc72341834"
 }

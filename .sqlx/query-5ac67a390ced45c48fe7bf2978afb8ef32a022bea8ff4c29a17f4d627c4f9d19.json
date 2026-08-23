@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE purchase_session SET state = $1, updated_at = now() WHERE session_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ac67a390ced45c48fe7bf2978afb8ef32a022bea8ff4c29a17f4d627c4f9d19"
+}

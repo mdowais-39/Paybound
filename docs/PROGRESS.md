@@ -58,3 +58,18 @@ block passes and is shown.
 - [x] ₹15,001 → `RequiresHumanAFA`; ₹14,999 and exactly ₹15,000 → `Approved`.
 - [x] Tampered mandate signature → `SignatureInvalid`.
 - Kernel is pure (no I/O deps). Whole workspace: **33 tests pass**; offline `clippy -D warnings` + `fmt` clean.
+
+## Phase 3 — MCP Storefront server — ✅ DONE
+
+**Built:**
+- `storefront-mcp` crate (lib + server bin): `Storefront` with the five tools — `search_catalog` (Postgres ILIKE ranking, trained-ranker swap point for Phase 7), `get_availability`, `get_variants`, `create_cart` (single-merchant, catalog-priced, persists a Cart Mandate), `checkout` (submits to the kernel, records gate_decision + audit entry, transitions session — **does NOT pay**).
+- `src/mcp.rs`: MCP JSON-RPC (`initialize`/`tools/list`/`tools/call`). `src/discovery.rs`: agents.txt / ARD manifest / product feed / schema.org JSON-LD. `src/main.rs`: axum server.
+- `ledger::repos` extended: `get_session`, `set_session_state`, `get_intent_mandate` (reconstruct + verifiable), `record_gate_decision`. Fixed `create_intent_mandate` to persist the signed `mandate_id`.
+- `examples/seed_demo.rs` for HTTP/e2e exercising.
+
+**STOP-AND-TEST results:**
+- [x] All five tools callable by a client — HTTP MCP smoke (curl): initialize → tools/list (5 tools) → search_catalog → get_availability → get_variants → create_cart → checkout. Plus 4 integration tests (`cargo test -p storefront-mcp`).
+- [x] `search_catalog` returns relevant products (category-first ranking over the 1000-item catalog).
+- [x] `checkout` in-budget → **Approved** (HTTP smoke + integration test); over-cap → **typed refusal** `over_per_txn_cap` (integration test).
+- [x] `agents.txt` served and valid; ard.json (5 tools, signed-mandate authority), feed.json (1000 products), schema.org JSON-LD all serve.
+- Whole workspace: **37 tests pass**; offline `clippy -D warnings` + `fmt` clean.

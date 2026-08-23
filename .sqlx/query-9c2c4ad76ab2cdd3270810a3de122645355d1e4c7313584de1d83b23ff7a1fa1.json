@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT availability, price_paise FROM catalog_item WHERE item_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "availability",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "price_paise",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9c2c4ad76ab2cdd3270810a3de122645355d1e4c7313584de1d83b23ff7a1fa1"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO cart_mandate (session_id, line_items, total_paise, merchant_id, intent_hash)\n             VALUES ($1, $2, $3, $4, $5) RETURNING cart_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cart_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "Int8",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a347caa734bd77f953c7e49036e39fd314fa95e8985afe3af54cf861a804d428"
+}
