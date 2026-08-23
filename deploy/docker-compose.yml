@@ -8,13 +8,16 @@ name: paybound
 
 services:
   postgres:
-    image: postgres:16
+    # pgvector image = Postgres 16 + the `vector` extension, needed for catalog
+    # search embeddings from Phase 3. Set up now to avoid a later migration.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: paybound
       POSTGRES_PASSWORD: paybound
       POSTGRES_DB: paybound
     ports:
-      - "5432:5432"
+      # Host 5433 to avoid a clash with a locally-installed PostgreSQL on 5432.
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

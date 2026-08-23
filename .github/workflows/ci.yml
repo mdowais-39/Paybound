@@ -6,20 +6,42 @@ on:
   pull_request:
 
 env:
-  # sqlx uses its offline query cache (.sqlx/) in CI — no live DB needed.
-  # The cache is generated with `cargo sqlx prepare` and committed (from Phase 1).
+  # Build/clippy use the committed .sqlx offline cache — no DB needed to compile.
   SQLX_OFFLINE: "true"
 
 jobs:
   rust:
     name: Rust — fmt, clippy, test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: paybound
+          POSTGRES_PASSWORD: paybound
+          POSTGRES_DB: paybound
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U paybound"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # Integration tests (#[sqlx::test]) connect here at runtime to spin up
+      # per-test databases.
+      DATABASE_URL: postgres://paybound:paybound@localhost:5432/paybound
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Refresh template collation (pgvector image quirk; no-op if matched)
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=paybound psql -h localhost -U paybound -d postgres \
+            -c "ALTER DATABASE template1 REFRESH COLLATION VERSION;" || true
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy

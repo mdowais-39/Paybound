@@ -37,7 +37,7 @@ fn default_gateway_port() -> u16 {
     8080
 }
 fn default_database_url() -> String {
-    "postgres://paybound:paybound@localhost:5432/paybound".to_string()
+    "postgres://paybound:paybound@localhost:5433/paybound".to_string()
 }
 fn default_redis_url() -> String {
     "redis://localhost:6379".to_string()
