@@ -1,0 +1,40 @@
+# Secrets — NEVER commit (Part F #7)
+.env
+*.env
+!.env.example
+*.pem
+*.key
+signing_key*
+kaggle.json
+
+# Rust
+/target
+**/target
+Cargo.lock.orig
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.ipynb_checkpoints/
+
+# ML artifacts / datasets (large; ingested via scripts)
+/data/raw/
+/data/*.parquet
+/data/*.csv
+*.onnx
+*.pkl
+*.joblib
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Build / logs
+*.log
+/dist/

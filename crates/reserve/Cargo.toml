@@ -1,0 +1,12 @@
+[package]
+name = "reserve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+common.workspace = true
+domain.workspace = true
+serde.workspace = true
+time.workspace = true
+uuid.workspace = true

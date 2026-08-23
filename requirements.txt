@@ -1,0 +1,37 @@
+# Paybound Python AI layer — pinned loosely; CPU-friendly by default.
+# PyTorch is installed separately via conda (CUDA or CPU build) — see Part B.
+
+# Agent pipeline
+langgraph>=0.2
+langchain-core>=0.3
+anthropic>=0.40
+mcp>=1.2
+
+# ML services (relevance / upsell / confidence)
+xgboost>=2.1
+scikit-learn>=1.5
+pandas>=2.2
+numpy>=1.26
+onnx>=1.17
+onnxruntime>=1.19
+skl2onnx>=1.17
+
+# Service transport
+grpcio>=1.68
+grpcio-tools>=1.68
+protobuf>=5.28
+fastapi>=0.115
+uvicorn>=0.32
+pydantic>=2.9
+
+# Datasets / ingestion
+datasets>=3.0
+huggingface-hub>=0.26
+requests>=2.32
+
+# Durable workflow
+temporalio>=1.8
+
+# Dev / test
+pytest>=8.3
+ruff>=0.7

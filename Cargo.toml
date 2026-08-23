@@ -1,0 +1,73 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/domain",
+    "crates/ledger",
+    "crates/reserve",
+    "crates/kernel",
+    "crates/razorpay-client",
+    "crates/execution",
+    "crates/storefront-mcp",
+    "crates/gateway",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/OWNER/paybound"
+rust-version = "1.90"
+
+[workspace.dependencies]
+# Async runtime & web
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.28"
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+
+# Time & ids
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Crypto & hashing
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+hmac = "0.12"
+rand = "0.8"
+hex = "0.4"
+
+# DB — money is stored as BIGINT paise (never a float/decimal); see Part F #4
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "time", "json", "migrate"] }
+
+# Config & env
+figment = { version = "0.10", features = ["env", "toml"] }
+
+# Internal crates
+common = { path = "crates/common" }
+domain = { path = "crates/domain" }
+ledger = { path = "crates/ledger" }
+reserve = { path = "crates/reserve" }
+kernel = { path = "crates/kernel" }
+razorpay-client = { path = "crates/razorpay-client" }
+execution = { path = "crates/execution" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
