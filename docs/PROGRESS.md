@@ -22,7 +22,10 @@ block passes and is shown.
 - `docker compose config` → compose file valid.
 - **git:** independent repo initialised at `paybound/`, first commit `fdc4d21` (53 files, no secrets/`target/` staged). Remote pending the GitHub URL.
 
-**Blocked on / pending before Phase 0 is DONE (Part G) — needs Owais:**
-- [ ] Razorpay test keys + LLM API key → finish `.env`, run a Razorpay `fetch_payment`-equivalent call.
-- [ ] Docker Desktop running → `docker compose up`, confirm `/health` 200 + trace visible in Grafana.
-- [ ] Public GitHub repo URL → add remote, push, confirm CI green on first commit.
+**STOP-AND-TEST results:**
+- [x] `docker compose up` → all 5 core services up (Postgres & Redis healthy, Collector/Tempo/Grafana running).
+- [x] `/health` → HTTP 200; trace exported gateway → OTLP → collector (5 spans) → **Tempo returns it** (`rootServiceName=paybound-gateway`, `rootTraceName=health`), so it's visible in Grafana (Tempo datasource). See DECISIONS.md for the TraceLayer-level fix.
+- [x] Public repo pushed (github.com/mdowais-39/Paybound); **CI green** on commit `de96d3c` (success).
+- [ ] Razorpay `fetch_payment`-equivalent call — pending test keys (Owais fetching).
+
+Phase 0 is complete except the Razorpay test call, which unblocks the moment the keys land.
