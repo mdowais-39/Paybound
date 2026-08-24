@@ -204,6 +204,8 @@ async fn main() -> Result<(), BoxErr> {
     println!();
     banner("WALKING SKELETON COMPLETE — demoable from here on");
     println!("  Pay the link above with UPI 'success@razorpay' to see the REAL payment in the dashboard.");
+    // Machine-parseable line for scripts (e.g. the narrate/audit demo).
+    println!("SESSION={session}");
     Ok(())
 }
 

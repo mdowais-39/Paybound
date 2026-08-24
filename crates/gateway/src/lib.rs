@@ -4,20 +4,24 @@
 
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
 use execution::ExecutionPlane;
+use ledger::{AuditLedger, Db};
 use razorpay_client::verify_webhook_signature;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use time::format_description::well_known::Rfc3339;
+use uuid::Uuid;
 
-/// Shared state: the execution plane + the webhook secret.
+/// Shared state: the execution plane, the DB pool, and the webhook secret.
 #[derive(Clone)]
 pub struct AppState {
     pub exec: Arc<ExecutionPlane>,
+    pub pool: Db,
     pub webhook_secret: Arc<String>,
 }
 
@@ -26,7 +30,49 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/webhooks/razorpay", post(razorpay_webhook))
+        .route("/sessions/{session_id}/audit", get(audit_chain))
         .with_state(state)
+}
+
+/// Return a session's full narrated, hash-chained audit trail plus the
+/// tamper-evidence verdict. This is the read surface the frontend audit viewer
+/// consumes — the "why every rupee moved" artifact.
+#[tracing::instrument(name = "audit_chain", level = "info", skip(s))]
+async fn audit_chain(
+    State(s): State<AppState>,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let ledger = AuditLedger::new(&s.pool);
+    let chain = ledger
+        .list_chain(session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let verified = ledger
+        .verify_chain(session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let entries: Vec<Value> = chain
+        .iter()
+        .map(|e| {
+            json!({
+                "seq": e.seq,
+                "event_type": e.event_type,
+                "prev_hash": e.prev_hash,
+                "this_hash": e.this_hash,
+                "payload": e.payload,
+                "narrative": e.narrative,
+                "ts": e.ts.format(&Rfc3339).unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "session_id": session_id,
+        "verified": verified,
+        "entry_count": entries.len(),
+        "entries": entries,
+    })))
 }
 
 #[tracing::instrument(name = "health", level = "info")]

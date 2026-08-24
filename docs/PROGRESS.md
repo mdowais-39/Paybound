@@ -148,3 +148,16 @@ block passes and is shown.
 - [x] A mandate that hits its TTL mid-session transitions cleanly to REVOKED (`test_mandate_ttl_expiry_revokes_the_session`, time-skipped).
 - [x] **No operation double-executes across a crash** — exactly **1 payment_effect** after kill/restart/approve.
 - Python **22 tests** (services 20 + workflows 2), ruff clean. Rust **44 tests**, clippy/fmt clean.
+
+## Phase 9 — Explanation & audit narrative — ✅ DONE
+
+**Built:**
+- `services/explain/narrator.py` — `Narrator` writes a faithful one-sentence narrative into `audit_entry.narrative` for every entry (LLM describes, never decides).
+- Gateway `GET /sessions/{id}/audit` — returns the narrated, hash-verified chain (pool added to `AppState`).
+- `scripts/explain_demo.sh`; walking skeleton now prints `SESSION=` for scripting.
+
+**STOP-AND-TEST results:**
+- [x] Each purchase produces a readable narrative matching its actual decision — LIVE: narrated all 6 entries of a real purchase (session_created → cart_built → gate_decision → token_issued → payment_effect×2), each faithful ("The gate approved the transaction of ₹2,850", "A payment of ₹2,850 was successfully processed").
+- [x] The read API returns the full narrated chain — `GET /audit` → `verified: True`, 6 entries with narratives.
+- Narrator unit tests confirm it's fed the decision and instructs describe-only; audit-API integration test confirms narrated + verified + correct hash links.
+- Rust **45 tests**, Python **24 tests**; ruff/clippy/fmt clean.

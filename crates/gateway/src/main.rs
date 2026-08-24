@@ -31,10 +31,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let client = Arc::new(RazorpayClient::new(key_id, key_secret));
-    let exec = ExecutionPlane::new(pool, client, ExecConfig::default());
+    let exec = ExecutionPlane::new(pool.clone(), client, ExecConfig::default());
 
     let state = AppState {
         exec: Arc::new(exec),
+        pool,
         webhook_secret: Arc::new(webhook_secret),
     };
 

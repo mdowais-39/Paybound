@@ -89,3 +89,10 @@ choice, with a one-line reason. Newest at the bottom of each phase.
 - **Sync activities run via a `ThreadPoolExecutor`:** the activities use `requests`/`psycopg` (blocking), and Temporal requires an `activity_executor` for non-async activities (caught at runtime — the async test mocks had hidden it).
 - **Temporal behind the compose `workflow` profile** (opt-in); its `auto-setup` image creates the temporal databases in the app Postgres.
 - **Tests use `WorkflowEnvironment` time-skipping with mocked activities** (deterministic, no external Temporal/storefront/DB); they skip if the test server can't start, so CI stays green.
+
+## Phase 9 — Explanation & audit narrative
+
+- **The narrator DESCRIBES, never decides.** `services/explain/narrator.py` is fed each already-made decision (event type + payload) and returns a one-sentence description via the LLM; it cannot change a money outcome. The system prompt is explicit ("DESCRIBE ONLY — never approve, change, re-judge").
+- **Narrative is a non-hashed field.** The hash covers `prev_hash || payload || event_type || ts` — NOT `narrative` — so writing narratives after the fact never breaks `verify_chain` (confirmed live: `verified: True` after narration). Decision and narration are separate persisted artifacts.
+- **Gateway read API `GET /sessions/{id}/audit`** returns the full narrated, hash-verified chain (`verified`, `entry_count`, `entries[]` with seq/event_type/hashes/payload/narrative/ts) — the read surface the frontend audit viewer consumes. Required adding the DB pool to `AppState`.
+- **Structured LLM output:** the narrator uses `complete_json` returning `{"narrative": "..."}` (robust vs. free-text parsing). Narratives are generated once and stored, so the read path never depends on the LLM.

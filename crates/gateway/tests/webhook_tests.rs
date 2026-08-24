@@ -96,6 +96,7 @@ async fn signed_paid_webhook_completes_session_bad_signature_rejected(pool: PgPo
 
     let state = AppState {
         exec: Arc::new(exec),
+        pool: pool.clone(),
         webhook_secret: Arc::new(SECRET.to_string()),
     };
     let app = build_router(state);
