@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 common.workspace = true
+domain.workspace = true
 execution.workspace = true
 razorpay-client.workspace = true
 ledger.workspace = true

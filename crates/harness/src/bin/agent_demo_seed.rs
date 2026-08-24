@@ -23,13 +23,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // current run's own item out of search_catalog's top-N results (ties broke
     // arbitrarily against real ingested catalog items), intermittently making the
     // agent unable to find anything it should approve.
-    let existing: Option<Uuid> =
-        sqlx::query_scalar(
-            "SELECT merchant_id FROM merchant WHERE name = 'Agent Demo Sports' \
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT merchant_id FROM merchant WHERE name = 'Agent Demo Sports' \
              ORDER BY created_at LIMIT 1",
-        )
-            .fetch_optional(&pool)
-            .await?;
+    )
+    .fetch_optional(&pool)
+    .await?;
     let merchant = match existing {
         Some(id) => {
             sqlx::query("DELETE FROM catalog_item WHERE merchant_id = $1")

@@ -209,3 +209,124 @@ pub async fn is_mandate_revoked(pool: &Db, mandate_id: Uuid) -> Result<bool, App
     .unwrap_or(false);
     Ok(revoked)
 }
+
+/// One row of the mandate console listing: the mandate plus its bound
+/// session's live state and spend, so the frontend can render a spend meter
+/// without a second round-trip.
+pub struct MandateSummaryRow {
+    pub mandate_id: Uuid,
+    pub payer: String,
+    pub budget_total_paise: Paise,
+    pub per_txn_cap_paise: Paise,
+    pub allowed_categories: Value,
+    pub allowed_merchants: Value,
+    pub ttl: OffsetDateTime,
+    pub nl_goal: String,
+    pub revoked: bool,
+    pub session_id: Option<Uuid>,
+    pub session_state: Option<String>,
+    pub running_spend_paise: Option<Paise>,
+}
+
+/// List mandates newest-first, each joined to the (first) session created
+/// with it — the shape the Mandate Console renders directly.
+pub async fn list_mandates(pool: &Db, limit: i64) -> Result<Vec<MandateSummaryRow>, AppError> {
+    let rows = sqlx::query!(
+        "SELECT m.mandate_id, m.payer, m.budget_total_paise, m.per_txn_cap_paise,
+                m.allowed_categories, m.allowed_merchants, m.ttl, m.nl_goal,
+                (m.revoked_at IS NOT NULL) AS \"revoked!\",
+                s.session_id AS \"session_id?\", s.state AS \"session_state?\",
+                s.running_spend_paise AS \"running_spend_paise?\"
+         FROM intent_mandate m
+         LEFT JOIN LATERAL (
+             SELECT session_id, state, running_spend_paise FROM purchase_session
+             WHERE mandate_id = m.mandate_id ORDER BY created_at ASC LIMIT 1
+         ) s ON true
+         ORDER BY m.created_at DESC LIMIT $1",
+        limit
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| MandateSummaryRow {
+            mandate_id: r.mandate_id,
+            payer: r.payer,
+            budget_total_paise: r.budget_total_paise,
+            per_txn_cap_paise: r.per_txn_cap_paise,
+            allowed_categories: r.allowed_categories,
+            allowed_merchants: r.allowed_merchants,
+            ttl: r.ttl,
+            nl_goal: r.nl_goal,
+            revoked: r.revoked,
+            session_id: r.session_id,
+            session_state: r.session_state,
+            running_spend_paise: r.running_spend_paise,
+        })
+        .collect())
+}
+
+/// A session's state joined with its mandate's bounds — the shape the shop
+/// page polls to show a live spend meter alongside the session state.
+pub struct SessionSummaryRow {
+    pub session_id: Uuid,
+    pub mandate_id: Uuid,
+    pub state: String,
+    pub running_spend_paise: Paise,
+    pub budget_total_paise: Paise,
+    pub per_txn_cap_paise: Paise,
+    pub latest_cart_id: Option<Uuid>,
+}
+
+/// Read a session's state + spend + its mandate's bounds + its latest cart.
+pub async fn get_session_summary(
+    pool: &Db,
+    session_id: Uuid,
+) -> Result<SessionSummaryRow, AppError> {
+    let r = sqlx::query!(
+        "SELECT s.session_id, s.mandate_id, s.state, s.running_spend_paise,
+                m.budget_total_paise, m.per_txn_cap_paise,
+                (SELECT cart_id FROM cart_mandate WHERE session_id = s.session_id
+                   ORDER BY created_at DESC LIMIT 1) AS \"latest_cart_id?\"
+         FROM purchase_session s JOIN intent_mandate m USING (mandate_id)
+         WHERE s.session_id = $1",
+        session_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?
+    .ok_or_else(|| AppError::NotFound(format!("session {session_id}")))?;
+
+    Ok(SessionSummaryRow {
+        session_id: r.session_id,
+        mandate_id: r.mandate_id,
+        state: r.state,
+        running_spend_paise: r.running_spend_paise,
+        budget_total_paise: r.budget_total_paise,
+        per_txn_cap_paise: r.per_txn_cap_paise,
+        latest_cart_id: r.latest_cart_id,
+    })
+}
+
+/// Find a merchant by name, if one exists (used to resolve the default demo
+/// merchant a mandate is scoped to when the caller doesn't specify one).
+pub async fn find_merchant_by_name(pool: &Db, name: &str) -> Result<Option<Uuid>, AppError> {
+    sqlx::query_scalar!("SELECT merchant_id FROM merchant WHERE name = $1", name)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)
+}
+
+/// The distinct catalog categories a merchant sells — feeds the mandate
+/// form's category picker and the default allow-list when none is given.
+pub async fn list_categories(pool: &Db, merchant_id: Uuid) -> Result<Vec<String>, AppError> {
+    sqlx::query_scalar!(
+        "SELECT DISTINCT category FROM catalog_item WHERE merchant_id = $1 ORDER BY category",
+        merchant_id
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)
+}

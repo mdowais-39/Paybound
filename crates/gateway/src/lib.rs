@@ -4,20 +4,29 @@
 
 use axum::{
     body::Bytes,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Path, Query, State},
+    http::{HeaderMap, Method, StatusCode},
     routing::{get, post},
     Json, Router,
 };
+use domain::{AuditEventType, IntentMandate};
 use execution::ExecutionPlane;
-use ledger::{AuditLedger, Db};
+use ledger::{repos, AuditLedger, Db};
 use razorpay_client::verify_webhook_signature;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
+use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
+
+/// The demo storefront's catalog owner — the merchant a mandate is scoped to
+/// when the caller doesn't specify one. Falls back to the first merchant in
+/// the DB if it isn't found (e.g. before the ingest script has run).
+const DEFAULT_MERCHANT_NAME: &str = "Paybound Demo Store";
 
 /// A tiny token-bucket rate limiter (no external deps). Refills continuously;
 /// requests over the rate get 429. Applied globally to the gateway.
@@ -77,11 +86,21 @@ pub struct AppState {
 pub fn build_router(state: AppState) -> Router {
     // 200 req burst, refilling 200/s — a real limit that never bites a demo.
     let bucket = Arc::new(Mutex::new(TokenBucket::new(200.0, 200.0)));
+    // Permissive CORS: this gateway serves only test-mode, non-sensitive demo
+    // data (no auth, no PII) to a frontend that may run on any local port.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(Any);
     Router::new()
         .route("/health", get(health))
         .route("/webhooks/razorpay", post(razorpay_webhook))
         .route("/sessions/{session_id}/audit", get(audit_chain))
+        .route("/sessions/{session_id}", get(get_session))
+        .route("/mandates", post(create_mandate).get(list_mandates))
         .route("/mandates/{mandate_id}/revoke", post(revoke_mandate))
+        .route("/catalog/categories", get(list_categories))
+        .layer(cors)
         .layer(axum::middleware::from_fn_with_state(bucket, rate_limit))
         .with_state(state)
 }
@@ -143,6 +162,212 @@ async fn revoke_mandate(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "mandate_id": mandate_id, "revoked": true })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMandateReq {
+    #[serde(default = "default_payer")]
+    pub payer: String,
+    pub budget_total_paise: i64,
+    pub per_txn_cap_paise: i64,
+    /// Omit to authorize every category the target merchant sells.
+    pub allowed_categories: Option<Vec<String>>,
+    /// Omit to scope to the default demo merchant.
+    pub merchant_id: Option<Uuid>,
+    #[serde(default = "default_ttl_seconds")]
+    pub ttl_seconds: i64,
+    #[serde(default = "default_nl_goal")]
+    pub nl_goal: String,
+}
+fn default_payer() -> String {
+    "customer".to_string()
+}
+fn default_ttl_seconds() -> i64 {
+    3600
+}
+fn default_nl_goal() -> String {
+    "shop within budget".to_string()
+}
+
+fn bad_request(msg: impl Into<String>) -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, msg.into())
+}
+fn internal(e: impl std::fmt::Display) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+/// Create a signed Intent Mandate + the one session bound to it, so a
+/// customer can grant an agent bounded shopping authority from the frontend
+/// (replaces the `try_it_seed` / `agent_demo_seed` dev binaries). Each goal
+/// the customer later shops with runs against this SAME session, so
+/// `running_spend_paise` correctly accumulates across every purchase made
+/// under this mandate — not just the first.
+#[tracing::instrument(name = "create_mandate", level = "info", skip(s, req))]
+async fn create_mandate(
+    State(s): State<AppState>,
+    Json(req): Json<CreateMandateReq>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    if req.budget_total_paise <= 0 || req.per_txn_cap_paise <= 0 {
+        return Err(bad_request(
+            "budget_total_paise and per_txn_cap_paise must be > 0",
+        ));
+    }
+    if req.per_txn_cap_paise > req.budget_total_paise {
+        return Err(bad_request(
+            "per_txn_cap_paise cannot exceed budget_total_paise",
+        ));
+    }
+    if req.ttl_seconds <= 0 {
+        return Err(bad_request("ttl_seconds must be > 0"));
+    }
+
+    let merchant_id = match req.merchant_id {
+        Some(id) => id,
+        None => repos::find_merchant_by_name(&s.pool, DEFAULT_MERCHANT_NAME)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| {
+                bad_request(format!(
+                    "no merchant found; specify merchant_id or ingest the demo catalog \
+                     (default '{DEFAULT_MERCHANT_NAME}' not found)"
+                ))
+            })?,
+    };
+    let allowed_categories = match req.allowed_categories {
+        Some(cats) if !cats.is_empty() => cats,
+        _ => repos::list_categories(&s.pool, merchant_id)
+            .await
+            .map_err(internal)?,
+    };
+
+    let key = common::signing::generate_keypair();
+    let mandate = IntentMandate::new_signed(
+        &key,
+        Uuid::new_v4(),
+        req.payer.as_str(),
+        req.budget_total_paise,
+        req.per_txn_cap_paise,
+        allowed_categories.clone(),
+        vec![merchant_id],
+        OffsetDateTime::now_utc() + Duration::seconds(req.ttl_seconds),
+        req.nl_goal.as_str(),
+    );
+    let mandate_id = repos::create_intent_mandate(
+        &s.pool,
+        repos::NewIntentMandate {
+            mandate_id: mandate.mandate_id,
+            payer: &mandate.payer,
+            budget_total_paise: mandate.budget_total_paise,
+            per_txn_cap_paise: mandate.per_txn_cap_paise,
+            allowed_categories: &json!(mandate.allowed_categories),
+            allowed_merchants: &json!(mandate.allowed_merchants),
+            ttl: mandate.ttl,
+            nl_goal: &mandate.nl_goal,
+            public_key: &mandate.public_key,
+            signature: &mandate.signature,
+        },
+    )
+    .await
+    .map_err(internal)?;
+    let session_id = repos::create_session(&s.pool, mandate_id)
+        .await
+        .map_err(internal)?;
+    AuditLedger::new(&s.pool)
+        .append(
+            session_id,
+            AuditEventType::SessionCreated,
+            json!({ "payer": mandate.payer, "nl_goal": mandate.nl_goal }),
+        )
+        .await
+        .map_err(internal)?;
+
+    Ok(Json(json!({
+        "mandate_id": mandate_id,
+        "session_id": session_id,
+        "payer": mandate.payer,
+        "budget_total_paise": mandate.budget_total_paise,
+        "per_txn_cap_paise": mandate.per_txn_cap_paise,
+        "allowed_categories": mandate.allowed_categories,
+        "allowed_merchants": mandate.allowed_merchants,
+        "ttl_unix": mandate.ttl.unix_timestamp(),
+        "nl_goal": mandate.nl_goal,
+    })))
+}
+
+/// List mandates newest-first, each with its bound session's live state and
+/// spend — feeds the Mandate Console's list + spend meters.
+#[tracing::instrument(name = "list_mandates", level = "info", skip(s))]
+async fn list_mandates(State(s): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    let rows = repos::list_mandates(&s.pool, 100).await.map_err(internal)?;
+    let out: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "mandate_id": r.mandate_id,
+                "payer": r.payer,
+                "budget_total_paise": r.budget_total_paise,
+                "per_txn_cap_paise": r.per_txn_cap_paise,
+                "allowed_categories": r.allowed_categories,
+                "allowed_merchants": r.allowed_merchants,
+                "ttl_unix": r.ttl.unix_timestamp(),
+                "nl_goal": r.nl_goal,
+                "revoked": r.revoked,
+                "session_id": r.session_id,
+                "session_state": r.session_state,
+                "running_spend_paise": r.running_spend_paise.unwrap_or(0),
+            })
+        })
+        .collect();
+    Ok(Json(json!(out)))
+}
+
+/// A session's live state + spend + its mandate's bounds + its latest cart —
+/// what the shop page polls while (or after) the agent runs.
+#[tracing::instrument(name = "get_session", level = "info", skip(s))]
+async fn get_session(
+    State(s): State<AppState>,
+    Path(session_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let r = repos::get_session_summary(&s.pool, session_id)
+        .await
+        .map_err(|e| match e {
+            common::AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            other => internal(other),
+        })?;
+    Ok(Json(json!({
+        "session_id": r.session_id,
+        "mandate_id": r.mandate_id,
+        "state": r.state,
+        "running_spend_paise": r.running_spend_paise,
+        "budget_total_paise": r.budget_total_paise,
+        "per_txn_cap_paise": r.per_txn_cap_paise,
+        "latest_cart_id": r.latest_cart_id,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CategoriesQuery {
+    pub merchant_id: Option<Uuid>,
+}
+
+/// The distinct categories a merchant sells — feeds the mandate form's
+/// category picker. Defaults to the demo storefront's merchant.
+#[tracing::instrument(name = "list_categories", level = "info", skip(s))]
+async fn list_categories(
+    State(s): State<AppState>,
+    Query(q): Query<CategoriesQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let merchant_id = match q.merchant_id {
+        Some(id) => id,
+        None => repos::find_merchant_by_name(&s.pool, DEFAULT_MERCHANT_NAME)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| bad_request("no merchant found; specify ?merchant_id="))?,
+    };
+    let cats = repos::list_categories(&s.pool, merchant_id)
+        .await
+        .map_err(internal)?;
+    Ok(Json(json!(cats)))
 }
 
 /// Razorpay webhook receiver. Verifies the HMAC signature over the RAW body
