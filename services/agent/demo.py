@@ -16,6 +16,7 @@ from .llm import GeminiLLM
 from .mcp_client import HttpMcpClient
 from .ml_loader import load_confidence, load_relevance, load_upsell
 from .orchestrator import Orchestrator
+from .tracing import flush, init_tracing
 
 
 def main() -> int:
@@ -37,7 +38,13 @@ def main() -> int:
     )
 
     print(f'GOAL: "{goal}"\n')
-    result = orch.run(session_id, goal)
+    tracer = init_tracing()
+    with tracer.start_as_current_span("purchase") as span:
+        span.set_attribute("goal", goal)
+        span.set_attribute("session_id", session_id)
+        result = orch.run(session_id, goal)
+        trace_id = format(span.get_span_context().trace_id, "032x")
+    print(f"TRACE ID: {trace_id}  (one distributed trace: agent -> storefront -> execution -> Razorpay)")
 
     print(f"STATE   : {result.state}")
     print(f"MESSAGE : {result.message}")
@@ -48,6 +55,7 @@ def main() -> int:
     if result.clarification_question:
         print(f"ASK     : {result.clarification_question}")
     print(f"\nLLM calls made: {orch.llm.calls}")
+    flush()  # export spans before exit
     return 0
 
 

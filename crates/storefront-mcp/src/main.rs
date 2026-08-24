@@ -74,9 +74,33 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tracing::instrument(name = "mcp", level = "info", skip_all)]
-async fn mcp_endpoint(State(s): State<AppState>, Json(req): Json<Value>) -> Json<Value> {
-    Json(mcp::handle(&s.store, &req).await)
+/// Extract the W3C trace context from incoming HTTP headers so this request's
+/// spans join the caller's (the Python agent's) distributed trace.
+struct HeaderExtractor<'a>(&'a axum::http::HeaderMap);
+impl opentelemetry::propagation::Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+async fn mcp_endpoint(
+    State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<Value>,
+) -> Json<Value> {
+    use tracing::Instrument;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+    // Build the request span with the caller's trace context as its parent
+    // BEFORE entering it, so this span (and its children) join the caller's
+    // distributed trace rather than starting a new one.
+    let parent =
+        opentelemetry::global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(&headers)));
+    let span = tracing::info_span!("mcp");
+    span.set_parent(parent);
+    Json(mcp::handle(&s.store, &req).instrument(span).await)
 }
 
 async fn agents_txt(State(s): State<AppState>) -> impl IntoResponse {

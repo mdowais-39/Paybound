@@ -126,6 +126,7 @@ impl PaymentGateway for RazorpayClient {
         })
     }
 
+    #[tracing::instrument(name = "razorpay.create_payment_link", level = "info", skip(self, req), fields(amount_paise = req.amount))]
     async fn create_payment_link(&self, req: &PaymentLinkRequest) -> Result<PaymentLink, AppError> {
         let body = serde_json::json!({
             "amount": req.amount,

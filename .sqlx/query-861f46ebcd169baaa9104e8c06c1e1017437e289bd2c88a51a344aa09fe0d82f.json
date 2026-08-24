@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO webhook_event (body_sha256, event_type) VALUES ($1, $2)\n         ON CONFLICT (body_sha256) DO NOTHING RETURNING body_sha256",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "body_sha256",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "861f46ebcd169baaa9104e8c06c1e1017437e289bd2c88a51a344aa09fe0d82f"
+}

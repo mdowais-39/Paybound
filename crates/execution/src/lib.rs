@@ -84,6 +84,7 @@ impl ExecutionPlane {
     /// Turn a kernel authorization into a real Razorpay test-mode payment link,
     /// idempotently. Writes a `payment_effect`, issues a scoped single-use
     /// delegated token, appends audit entries, and moves the session to PAYING.
+    #[tracing::instrument(name = "execution.authorize", level = "info", skip(self, auth), fields(%session_id, amount_paise = auth.amount_paise))]
     pub async fn authorize(
         &self,
         session_id: Uuid,

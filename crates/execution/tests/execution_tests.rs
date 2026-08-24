@@ -200,3 +200,31 @@ async fn failed_webhook_records_clean_failure_without_completing(pool: PgPool) {
         "COMPLETED"
     );
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn delegated_token_is_single_use(pool: PgPool) {
+    let (session, mandate) = seed_session(&pool).await;
+    let gw = FakeGateway::default();
+    let exec = ExecutionPlane::new(pool.clone(), Arc::new(gw), ExecConfig::default());
+    let r = exec
+        .authorize(session, &auth(mandate, 285_000))
+        .await
+        .unwrap();
+
+    // Reusing the same scoped delegated token for a second payment_effect must
+    // fail (UNIQUE constraint) — the token is single-use by construction.
+    let reuse = sqlx::query(
+        "INSERT INTO payment_effect (session_id, delegated_token, idempotency_key, amount_paise, outcome)
+         VALUES ($1, $2, $3, $4, 'pending')",
+    )
+    .bind(session)
+    .bind(&r.delegated_token)
+    .bind("a-different-idempotency-key")
+    .bind(100_000i64)
+    .execute(&pool)
+    .await;
+    assert!(
+        reuse.is_err(),
+        "a delegated token cannot back a second payment"
+    );
+}

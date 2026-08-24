@@ -35,6 +35,12 @@ pub fn init(service_name: &str, otlp_endpoint: &str) -> TelemetryGuard {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,paybound=debug"));
     let fmt_layer = fmt::layer().with_target(true).with_level(true);
 
+    // W3C trace-context propagation, so an incoming `traceparent` header (e.g.
+    // from the Python agent) links its spans into the same distributed trace.
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+
     let provider = build_provider(service_name, otlp_endpoint);
 
     match &provider {

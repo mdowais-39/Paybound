@@ -143,3 +143,54 @@ async fn signed_paid_webhook_completes_session_bad_signature_rejected(pool: PgPo
         .unwrap();
     assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn duplicate_webhook_is_deduped(pool: PgPool) {
+    let session = seed_session(&pool).await;
+    let exec = ExecutionPlane::new(
+        pool.clone(),
+        std::sync::Arc::new(FakeGateway),
+        ExecConfig::default(),
+    );
+    let auth = Authorization {
+        mandate_id: Uuid::new_v4(),
+        cart_hash: "h".into(),
+        amount_paise: 285_000,
+    };
+    let r = exec.authorize(session, &auth).await.unwrap();
+    let app = build_router(AppState {
+        exec: Arc::new(exec),
+        pool: pool.clone(),
+        webhook_secret: Arc::new(SECRET.to_string()),
+    });
+
+    let body = json!({
+        "event": "payment_link.paid",
+        "payload": { "payment_link": { "entity": { "id": r.razorpay_ref } } }
+    })
+    .to_string();
+    let sig = sign_webhook(SECRET, body.as_bytes());
+    let post = || {
+        Request::builder()
+            .method("POST")
+            .uri("/webhooks/razorpay")
+            .header("content-type", "application/json")
+            .header("X-Razorpay-Signature", sig.clone())
+            .body(Body::from(body.clone()))
+            .unwrap()
+    };
+
+    // Deliver the SAME signed webhook twice — both acknowledged (200) ...
+    assert_eq!(
+        app.clone().oneshot(post()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(app.oneshot(post()).await.unwrap().status(), StatusCode::OK);
+
+    // ... but it was recorded (and processed) exactly once.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM webhook_event")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "a replayed webhook must be deduped");
+}

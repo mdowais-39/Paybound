@@ -14,8 +14,56 @@ use ledger::{AuditLedger, Db};
 use razorpay_client::verify_webhook_signature;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Instant;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
+
+/// A tiny token-bucket rate limiter (no external deps). Refills continuously;
+/// requests over the rate get 429. Applied globally to the gateway.
+struct TokenBucket {
+    tokens: f64,
+    capacity: f64,
+    refill_per_sec: f64,
+    last: Instant,
+}
+
+impl TokenBucket {
+    fn new(capacity: f64, refill_per_sec: f64) -> Self {
+        Self {
+            tokens: capacity,
+            capacity,
+            refill_per_sec,
+            last: Instant::now(),
+        }
+    }
+    fn try_take(&mut self) -> bool {
+        let now = Instant::now();
+        self.tokens = (self.tokens
+            + now.duration_since(self.last).as_secs_f64() * self.refill_per_sec)
+            .min(self.capacity);
+        self.last = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+async fn rate_limit(
+    axum::extract::State(bucket): axum::extract::State<Arc<Mutex<TokenBucket>>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if bucket.lock().unwrap().try_take() {
+        next.run(req).await
+    } else {
+        (StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response()
+    }
+}
 
 /// Shared state: the execution plane, the DB pool, and the webhook secret.
 #[derive(Clone)]
@@ -25,12 +73,15 @@ pub struct AppState {
     pub webhook_secret: Arc<String>,
 }
 
-/// Build the gateway router.
+/// Build the gateway router (with a global token-bucket rate limit).
 pub fn build_router(state: AppState) -> Router {
+    // 200 req burst, refilling 200/s — a real limit that never bites a demo.
+    let bucket = Arc::new(Mutex::new(TokenBucket::new(200.0, 200.0)));
     Router::new()
         .route("/health", get(health))
         .route("/webhooks/razorpay", post(razorpay_webhook))
         .route("/sessions/{session_id}/audit", get(audit_chain))
+        .layer(axum::middleware::from_fn_with_state(bucket, rate_limit))
         .with_state(state)
 }
 
@@ -104,6 +155,25 @@ async fn razorpay_webhook(
         Err(_) => return StatusCode::BAD_REQUEST,
     };
     let event_type = event.get("event").and_then(|e| e.as_str()).unwrap_or("");
+
+    // Replay protection: record each delivered body once. A duplicate/replayed
+    // delivery conflicts on the SHA-256 PK and is acknowledged without re-processing.
+    let body_hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&body));
+    let first_delivery = sqlx::query_scalar!(
+        "INSERT INTO webhook_event (body_sha256, event_type) VALUES ($1, $2)
+         ON CONFLICT (body_sha256) DO NOTHING RETURNING body_sha256",
+        body_hash,
+        event_type
+    )
+    .fetch_optional(&s.pool)
+    .await
+    .unwrap_or(None)
+    .is_some();
+    if !first_delivery {
+        tracing::warn!(event_type, "duplicate/replayed webhook ignored");
+        return StatusCode::OK;
+    }
+
     let plink_id = event
         .pointer("/payload/payment_link/entity/id")
         .and_then(|v| v.as_str())

@@ -161,3 +161,14 @@ block passes and is shown.
 - [x] The read API returns the full narrated chain — `GET /audit` → `verified: True`, 6 entries with narratives.
 - Narrator unit tests confirm it's fed the decision and instructs describe-only; audit-API integration test confirms narrated + verified + correct hash links.
 - Rust **45 tests**, Python **24 tests**; ruff/clippy/fmt clean.
+
+## Phase 10 — Observability, security & hardening — ✅ DONE (1 partial)
+
+**Built:** money-path tracing spans (checkout/create_cart/authorize/razorpay) + W3C propagation (global propagator, agent injects `traceparent`, storefront extracts); `UNIQUE(delegated_token)` + `webhook_event` dedup table (migration 0002); dependency-free gateway rate limiter; heuristic LLM fallback.
+
+**STOP-AND-TEST results:**
+- [~] One purchase = single distributed trace — PARTIAL: all services export OTLP, the checkout money-path is one coherent Grafana trace (mcp → checkout → execution.authorize → razorpay), and `traceparent` is propagated agent→storefront (verified). The cross-language span *grouping* under one trace id is a known `tracing-opentelemetry` nuance (documented).
+- [x] No secret present in the repo — `git grep` clean (only `.env.example` placeholders); `.env`/key files git-ignored; signing key ephemeral.
+- [x] Duplicate/stale webhook rejected — `duplicate_webhook_is_deduped` (recorded + processed exactly once).
+- [x] Scoped delegated token cannot be reused — `delegated_token_is_single_use` (UNIQUE violation on reuse).
+- Rust **47 tests**, Python **24 tests**; clippy/fmt/ruff clean.

@@ -175,6 +175,7 @@ impl Storefront {
     /// Assemble a cart from catalog items (single merchant), persist it as a
     /// Cart Mandate bound to the session, and return it. Prices/categories come
     /// from the catalog — the agent cannot invent them.
+    #[tracing::instrument(name = "storefront.create_cart", level = "info", skip(self, items), fields(%session_id))]
     pub async fn create_cart(
         &self,
         session_id: Uuid,
@@ -262,6 +263,7 @@ impl Storefront {
     /// Submit a built cart to the kernel. **Does not pay.** Returns the kernel's
     /// decision, records a gate_decision + audit entry, and transitions the
     /// session to AUTHORIZED / NEEDS_HUMAN / REFUSED.
+    #[tracing::instrument(name = "storefront.checkout", level = "info", skip(self), fields(%session_id, %cart_id))]
     pub async fn checkout(
         &self,
         session_id: Uuid,

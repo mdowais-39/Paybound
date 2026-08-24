@@ -150,7 +150,14 @@ class Orchestrator(BaseAgent):
     def _parse_intent(self, goal: str, mandate: dict) -> Intent:
         cats = mandate.get("allowed_categories") or []
         user = f"Allowed categories: {cats}. Budget (paise): {mandate.get('budget_total_paise')}.\nRequest: {goal}"
-        data = self.llm.complete_json(_PARSE_SYSTEM, user)
+        try:
+            data = self.llm.complete_json(_PARSE_SYSTEM, user)
+        except Exception as e:  # noqa: BLE001
+            # Graceful degradation: if the LLM is unavailable (outage / rate
+            # limit), fall back to a deterministic parse. The kernel and the
+            # mandate bounds still gate everything, so this stays safe.
+            logger.warning("llm_parse_failed_using_heuristic", extra={"error": str(e)})
+            return self._heuristic_intent(goal)
         return Intent(
             query=str(data.get("query") or goal),
             max_price_paise=data.get("max_price_paise"),
@@ -158,3 +165,13 @@ class Orchestrator(BaseAgent):
             ambiguous=bool(data.get("ambiguous", False)),
             clarification_question=data.get("clarification_question"),
         )
+
+    @staticmethod
+    def _heuristic_intent(goal: str) -> Intent:
+        import re
+
+        m = re.search(r"(?:under|below|less than)\s*(?:rs\.?|₹)?\s*(\d[\d,]*)", goal, re.IGNORECASE)
+        max_price = int(m.group(1).replace(",", "")) * 100 if m else None
+        query = re.sub(r"\b(buy|purchase|get|me|please|a|an|the|for)\b", " ", goal, flags=re.IGNORECASE)
+        query = re.sub(r"(?:under|below|less than).*$", "", query, flags=re.IGNORECASE).strip()
+        return Intent(query=query or goal, max_price_paise=max_price)
