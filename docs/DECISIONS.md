@@ -79,3 +79,13 @@ choice, with a one-line reason. Newest at the bottom of each phase.
 - **Purchase Confidence Scorer:** gradient-boosted classifier over 5 named features (cart-to-goal match, price variance, category ambiguity, clarification turns, upsell acceptance), trained on **synthesised** clear/ambiguous scenarios (stated openly). Replaces the heuristic 'low confidence' with a deterministic, inspectable signal; below threshold routes to NEEDS_HUMAN **citing the scorer**, same footing as the ₹15,000 AFA rule.
 - **Serving = in-process** (the plan explicitly allows this over a network hop): the agent loads the three joblib artifacts best-effort at startup; if any is missing it falls back to heuristics (so CI, which does not train, and all unit tests stay green). Model artifacts (`*.joblib`) and datasets (`data/raw/`) are git-ignored and reproduced by the `train.py` scripts.
 - **CPU PyTorch** (not CUDA): the sampled ESCI subset + small GBMs train in minutes; the GPU would only speed embedding, which isn't the bottleneck at this scale.
+
+## Phase 8 — Durable workflow spine
+
+- **Temporal (Python SDK) drives the durable workflow; Rust services are activities** invoked over HTTP (the MCP checkout). Chosen over Restate because Temporal's Python SDK is GA while the Rust SDK is public-preview (the prompt's recommended split).
+- **The NEEDS_HUMAN wait and the mandate-TTL are both durable:** `workflow.wait_condition(lambda: approved, timeout=ttl)` — the approval signal resumes it, the TTL timeout revokes it. State lives in the Temporal server, so killing + restarting the worker mid-wait resumes exactly where it left off.
+- **No double-execution across a crash:** the `authorize_payment` activity goes through the idempotent execution plane (`ON CONFLICT`), so a retry after a crash returns the same payment link. Verified: after kill → restart → approve, the session has exactly **1 payment_effect**.
+- **TTL expiry → session REVOKED** (the authority ended before approval).
+- **Sync activities run via a `ThreadPoolExecutor`:** the activities use `requests`/`psycopg` (blocking), and Temporal requires an `activity_executor` for non-async activities (caught at runtime — the async test mocks had hidden it).
+- **Temporal behind the compose `workflow` profile** (opt-in); its `auto-setup` image creates the temporal databases in the app Postgres.
+- **Tests use `WorkflowEnvironment` time-skipping with mocked activities** (deterministic, no external Temporal/storefront/DB); they skip if the test server can't start, so CI stays green.

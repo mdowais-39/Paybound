@@ -14,7 +14,7 @@ select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501", "B905"]  # line length handled by formatter; B905 (zip strict=) too noisy for scripts
 
 [tool.pytest.ini_options]
-testpaths = ["services"]
+testpaths = ["services", "workflows"]
 python_files = ["test_*.py", "*_test.py"]
 addopts = "-q"
 

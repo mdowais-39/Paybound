@@ -135,3 +135,16 @@ block passes and is shown.
 - [x] `score_purchase` separates clear vs ambiguous (held-out ROC-AUC ~0.999, synthesised) and a below-threshold session routes to NEEDS_HUMAN **citing the scorer** (unit test).
 - All three datasets used: Instacart (lift pairs), ESCI (relevance + 40k C pairs), Amazon Reviews 2023 (co-review, 582 keys).
 - **Python 20 tests** (agent 15 + ml 3 + smoke 2), ruff clean. Rust **44 tests**, clippy/fmt clean.
+
+## Phase 8 — Durable workflow spine — ✅ DONE
+
+**Built (workflows/):**
+- `purchase_workflow.py` — `PurchaseApprovalWorkflow`: durable approval wait + mandate-TTL timer; `approve` signal; returns AUTHORIZED (approved) or REVOKED (TTL).
+- `activities.py` — `authorize_payment` (idempotent checkout w/ afa_approved), `expire_session`; `worker.py` (ThreadPoolExecutor for sync activities); `client.py` (start/approve/result).
+- `scripts/durable_demo.sh` (crash-safety) + `crates/harness/src/bin/afa_seed.rs`.
+
+**STOP-AND-TEST results:**
+- [x] A session paused at NEEDS_HUMAN survives a full **worker kill + restart** and resumes on approval — LIVE demo: killed the worker mid-wait, restarted, approved → real payment link, `session_state=PAYING`.
+- [x] A mandate that hits its TTL mid-session transitions cleanly to REVOKED (`test_mandate_ttl_expiry_revokes_the_session`, time-skipped).
+- [x] **No operation double-executes across a crash** — exactly **1 payment_effect** after kill/restart/approve.
+- Python **22 tests** (services 20 + workflows 2), ruff clean. Rust **44 tests**, clippy/fmt clean.
