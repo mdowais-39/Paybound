@@ -17,12 +17,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = std::env::var("DATABASE_URL").expect("set DATABASE_URL");
     let pool = PgPoolOptions::new().connect(&db).await?;
 
-    let merchant = repos::create_merchant(&pool, "Agent Demo Sports", &json!(["upi"])).await?;
+    // Reuse a stable demo merchant across runs instead of minting a new one each
+    // time: a fresh merchant per run left the catalog with dozens of duplicate
+    // "Trail Running Shoe" rows across different merchant_ids, which crowded the
+    // current run's own item out of search_catalog's top-N results (ties broke
+    // arbitrarily against real ingested catalog items), intermittently making the
+    // agent unable to find anything it should approve.
+    let existing: Option<Uuid> =
+        sqlx::query_scalar(
+            "SELECT merchant_id FROM merchant WHERE name = 'Agent Demo Sports' \
+             ORDER BY created_at LIMIT 1",
+        )
+            .fetch_optional(&pool)
+            .await?;
+    let merchant = match existing {
+        Some(id) => {
+            sqlx::query("DELETE FROM catalog_item WHERE merchant_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await?;
+            id
+        }
+        None => repos::create_merchant(&pool, "Agent Demo Sports", &json!(["upi"])).await?,
+    };
     // Footwear (the primary goal) + socks (a complement the upsell model suggests).
     for (title, category, price) in [
         ("Trail Running Shoe", "footwear", 285_000i64),
         ("Road Runner Lite", "footwear", 210_000),
-        ("Marathon Pro (premium)", "footwear", 540_000),
+        ("Marathon Pro Premium Running Shoe", "footwear", 540_000),
         ("Cushioned Ankle Socks (3-pack)", "socks", 45_000),
         ("Compression Running Socks", "socks", 60_000),
     ] {

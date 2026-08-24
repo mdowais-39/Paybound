@@ -14,10 +14,13 @@ Run: python -m services.explain.narrator <session_id>
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 
 from services.agent.llm import GeminiLLM
+
+logger = logging.getLogger("paybound.narrator")
 
 _SYSTEM = (
     "You are an audit narrator for a payments system. You are given ONE decision "
@@ -41,12 +44,21 @@ class Narrator:
         )
 
     def narrate_entry(self, event_type: str, payload: dict) -> str:
-        """Produce a faithful one-sentence narrative for a single decision."""
-        data = self.llm.complete_json(_SYSTEM, build_prompt(event_type, payload))
-        return str(data.get("narrative", "")).strip()
+        """Produce a faithful one-sentence narrative for a single decision.
+        Never raises: if the LLM is unavailable (outage / rate limit), falls
+        back to a deterministic sentence. The narrative is cosmetic and not
+        part of the hash chain, so degrading it is always safe — unlike the
+        kernel's decision, which this never touches."""
+        try:
+            data = self.llm.complete_json(_SYSTEM, build_prompt(event_type, payload))
+            return str(data.get("narrative", "")).strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("narration_failed_using_fallback", extra={"error": str(e)})
+            return f"{event_type.replace('_', ' ')}: {json.dumps(payload, ensure_ascii=False)}"
 
     def narrate_session(self, session_id: str) -> int:
-        """Narrate every not-yet-narrated entry on a session. Returns the count."""
+        """Narrate every not-yet-narrated entry on a session. Returns the count.
+        Commits after each entry so a later failure never loses earlier progress."""
         import psycopg
 
         narrated = 0
@@ -65,8 +77,8 @@ class Narrator:
                         "UPDATE audit_entry SET narrative = %s WHERE entry_id = %s",
                         (text, entry_id),
                     )
+                conn.commit()
                 narrated += 1
-            conn.commit()
         return narrated
 
 

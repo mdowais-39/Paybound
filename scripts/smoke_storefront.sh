@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # One-command smoke test of the MCP storefront: seeds a signed mandate + session
 # against the real catalog, starts the server, and exercises all five tools plus
-# the discovery surface over HTTP. Requires: infra up (docker compose) and the
-# catalog ingested (data/ingest_abo.py). Safe to re-run.
+# the discovery surface over HTTP. Requires: infra up (docker compose), .env with
+# Razorpay test keys, and the catalog ingested (data/ingest_abo.py). Safe to re-run.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+set -a; . ./.env; set +a
 export DATABASE_URL="${DATABASE_URL:-postgres://paybound:paybound@localhost:5433/paybound}"
 export PAYBOUND_DATABASE_URL="$DATABASE_URL"
 export PYTHONUTF8=1

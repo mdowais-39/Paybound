@@ -14,7 +14,12 @@ from typing import Protocol
 import requests
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-DEFAULT_MODEL = "gemini-flash-latest"
+# Pinned (not "-latest"): the "-latest" alias silently floats onto whatever
+# Google currently flags as newest, which can land on a preview-tier model with
+# a much smaller free-tier daily quota (gemini-3.7-flash: 20 req/day — enough to
+# exhaust in one demo run). Gemini quota is per-project-per-model, so a stable,
+# explicit lite model keeps its own separate, larger allowance.
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 
 class LLM(Protocol):

@@ -33,7 +33,13 @@ Return ONLY a JSON object with these fields:
   ambiguous: boolean — true if the request is too vague to shop (e.g. "something nice")
   clarification_question: string or null — if ambiguous, a specific follow-up question
 Only mark ambiguous when you genuinely cannot pick search terms. Prices in the
-request are in rupees; multiply by 100 for paise."""
+request are in rupees; multiply by 100 for paise.
+IMPORTANT: max_price_paise must reflect ONLY a price limit the Request text itself
+states (e.g. "under 3000", "below ₹500"). The context also lists the account's
+overall allowed categories and total budget — those are separate, account-level
+limits enforced elsewhere; never copy the budget figure into max_price_paise, and
+leave it null whenever the request names a specific item without stating its own
+price limit."""
 
 
 class Orchestrator(BaseAgent):
