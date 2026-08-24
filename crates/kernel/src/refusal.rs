@@ -27,6 +27,8 @@ pub enum RefusalReason {
     /// Cart is within the mandate but above the ₹15,000 AFA threshold — needs a
     /// human PIN-equivalent approval before it can proceed.
     RequiresHumanAFA,
+    /// The human revoked this mandate's authority; nothing more can be spent.
+    MandateRevoked,
 }
 
 impl RefusalReason {
@@ -50,6 +52,7 @@ impl RefusalReason {
             RefusalReason::MerchantNotAllowed => "merchant_not_allowed",
             RefusalReason::CartIntegrityMismatch => "cart_integrity_mismatch",
             RefusalReason::RequiresHumanAFA => "requires_human_afa",
+            RefusalReason::MandateRevoked => "mandate_revoked",
         }
     }
 
@@ -74,6 +77,7 @@ impl RefusalReason {
             RefusalReason::RequiresHumanAFA => {
                 "This purchase is above ₹15,000 and needs your approval."
             }
+            RefusalReason::MandateRevoked => "You revoked this authorization.",
         }
     }
 }

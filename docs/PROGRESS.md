@@ -172,3 +172,18 @@ block passes and is shown.
 - [x] Duplicate/stale webhook rejected — `duplicate_webhook_is_deduped` (recorded + processed exactly once).
 - [x] Scoped delegated token cannot be reused — `delegated_token_is_single_use` (UNIQUE violation on reuse).
 - Rust **47 tests**, Python **24 tests**; clippy/fmt/ruff clean.
+
+## Phase 11 — Evaluation harness & demo scenarios — ✅ DONE
+
+**Built:** instant revocation (kernel `MandateRevoked` + `revoked_at` + gateway `POST /mandates/{id}/revoke`); the adversarial battery (`harness --bin adversarial` → `docs/BOUNDS_HOLD.md`); `scripts/revocation_demo.sh`; `eval/README.md`; `docs/HONEST_METRICS.md`.
+
+**STOP-AND-TEST results:**
+- [x] Adversarial battery passes — **10/10 bounds hold**, every violation blocked with the correct typed reason (signature, expiry, per-txn, cumulative, category, merchant, integrity/price-drift, AFA→needs_human, revocation). Table in `docs/BOUNDS_HOLD.md`.
+- [x] Each demo scenario runs deterministically on demand — happy+upsell / graceful refusal (`agent_demo.sh`), live revocation (`revocation_demo.sh`, verified: buy→revoke→REFUSED mandate_revoked), >₹15k pause+crash-safe resume (`durable_demo.sh`).
+- [x] Honest real-vs-simulated summary + bounds-hold table committed (`docs/HONEST_METRICS.md`, `docs/BOUNDS_HOLD.md`).
+- Rust **48 tests** (kernel now 13 incl. revocation), Python **24 tests**; clippy/fmt/ruff clean.
+
+---
+
+## 🎉 ALL 12 PHASES (0–11) COMPLETE.
+The full architecture is built end-to-end: the trust layer (signed mandates → pure kernel gate → simulated Reserve-Pay → hash-chained audit), the agentic pipeline (LangGraph-style orchestrator + workers + 3 trained models), real Razorpay test-mode payments, a durable crash-safe workflow, LLM-narrated audit trail, observability + hardening, and the adversarial "bounds hold" evidence.

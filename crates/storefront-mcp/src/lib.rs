@@ -291,6 +291,7 @@ impl Storefront {
 
         let session = repos::get_session(&self.pool, session_id).await?;
         let mandate = repos::get_intent_mandate(&self.pool, session.mandate_id).await?;
+        let revoked = repos::is_mandate_revoked(&self.pool, session.mandate_id).await?;
 
         let decision = evaluate(&KernelInput {
             mandate: &mandate,
@@ -299,14 +300,16 @@ impl Storefront {
             now: OffsetDateTime::now_utc(),
             expected_cart_hash: None,
             afa_approved,
+            revoked,
         });
 
         let (verdict, rule_cited, human_message, new_state) = match &decision {
             KernelDecision::Approved(_) => ("approved", None, None, "AUTHORIZED"),
             KernelDecision::Refused(reason) => {
                 let verdict = reason.verdict();
-                let state = match verdict {
-                    domain::Verdict::NeedsHuman => "NEEDS_HUMAN",
+                let state = match (verdict, reason) {
+                    (domain::Verdict::NeedsHuman, _) => "NEEDS_HUMAN",
+                    (_, kernel::RefusalReason::MandateRevoked) => "REVOKED",
                     _ => "REFUSED",
                 };
                 (

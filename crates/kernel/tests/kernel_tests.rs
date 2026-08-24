@@ -58,6 +58,7 @@ fn input<'a>(
         now,
         expected_cart_hash: None,
         afa_approved: false,
+        revoked: false,
     }
 }
 
@@ -242,6 +243,7 @@ fn cart_integrity_mismatch_on_expected_hash_drift() {
         now: now(),
         expected_cart_hash: Some(stale_hash),
         afa_approved: false,
+        revoked: false,
     };
     assert_eq!(
         refusal(evaluate(&inp)),
@@ -256,6 +258,7 @@ fn cart_integrity_mismatch_on_expected_hash_drift() {
         now: now(),
         expected_cart_hash: Some(&good),
         afa_approved: false,
+        revoked: false,
     };
     assert!(matches!(evaluate(&inp_ok), KernelDecision::Approved(_)));
 }
@@ -347,6 +350,32 @@ fn afa_approved_by_human_allows_above_15k() {
         now: now(),
         expected_cart_hash: None,
         afa_approved: true,
+        revoked: false,
     };
     assert!(matches!(evaluate(&approved), KernelDecision::Approved(_)));
+}
+
+// --- Revocation: a revoked mandate refuses everything -------------------------
+
+#[test]
+fn revoked_mandate_is_refused() {
+    let key = generate_keypair();
+    let m = valid_mandate(&key);
+    let c = cart(285_000); // an otherwise perfectly valid cart
+    let inp = KernelInput {
+        mandate: &m,
+        cart: &c,
+        running_spend_paise: 0,
+        now: now(),
+        expected_cart_hash: None,
+        afa_approved: false,
+        revoked: true,
+    };
+    assert_eq!(refusal(evaluate(&inp)), RefusalReason::MandateRevoked);
+    // adjacent pass: same everything, not revoked -> approved
+    let ok = KernelInput {
+        revoked: false,
+        ..inp
+    };
+    assert!(matches!(evaluate(&ok), KernelDecision::Approved(_)));
 }

@@ -183,3 +183,29 @@ pub async fn record_gate_decision(
     .map_err(db_err)?;
     Ok(id)
 }
+
+/// Revoke a mandate's authority (instant revocation). Idempotent.
+pub async fn revoke_mandate(pool: &Db, mandate_id: Uuid) -> Result<(), AppError> {
+    sqlx::query!(
+        "UPDATE intent_mandate SET revoked_at = now() WHERE mandate_id = $1 AND revoked_at IS NULL",
+        mandate_id
+    )
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(())
+}
+
+/// Whether a mandate has been revoked.
+pub async fn is_mandate_revoked(pool: &Db, mandate_id: Uuid) -> Result<bool, AppError> {
+    let revoked = sqlx::query_scalar!(
+        "SELECT (revoked_at IS NOT NULL) FROM intent_mandate WHERE mandate_id = $1",
+        mandate_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?
+    .flatten()
+    .unwrap_or(false);
+    Ok(revoked)
+}

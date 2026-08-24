@@ -106,3 +106,10 @@ choice, with a one-line reason. Newest at the bottom of each phase.
 - **Rate limiting:** a dependency-free global token-bucket middleware on the gateway (200 burst, 200/s) returns 429 when exceeded.
 - **Secrets:** manual scan (`git grep`) confirms no real keys in tracked files — only placeholders in `.env.example`; `.env` and any key files are git-ignored; the ed25519 signing key is generated ephemerally (never persisted/committed).
 - **LLM resilience (bonus):** the agent falls back to a deterministic regex intent-parse when the LLM is unavailable (rate-limited/outage), so a purchase still proceeds — the kernel and mandate bounds still gate everything.
+
+## Phase 11 — Evaluation harness & demo scenarios (final)
+
+- **Instant revocation added** (a hero moment that was missing): `revoked_at` on `intent_mandate`; a 9th kernel `RefusalReason::MandateRevoked` checked **first**; the storefront checkout reads revocation and refuses (session → REVOKED); `POST /mandates/{id}/revoke` on the gateway (frontend-contract endpoint). Live demo: buy → revoke → next attempt blocked.
+- **Adversarial battery = a Rust bin over the pure kernel** (`harness --bin adversarial`), deterministic and DB-free, producing `docs/BOUNDS_HOLD.md` and exiting non-zero if any bound fails — so it doubles as a gate. **10/10 bounds hold** (baseline approve + all 9 refusal reasons).
+- **Four demo scenarios scripted deterministically** (happy+upsell, graceful refusal, live revocation, >₹15k human-approval pause), indexed in `eval/README.md`.
+- **Honest-metrics summary** (`docs/HONEST_METRICS.md`): real (payment links, webhooks, MCP tools, kernel, signed+hashed audit, AFA gate, durable workflow, the 3 ML models on real data) vs. simulated (Reserve-Pay ledger, ABO ₹ prices, synthetic-signed webhook in scripts), plus the distributed-trace limitation.

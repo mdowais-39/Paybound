@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE intent_mandate SET revoked_at = now() WHERE mandate_id = $1 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90f8615c1e1d33acf35d66e811a568128c78426ea88f14b9bd6ea4a74395dca6"
+}

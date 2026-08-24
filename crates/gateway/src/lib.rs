@@ -81,6 +81,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/webhooks/razorpay", post(razorpay_webhook))
         .route("/sessions/{session_id}/audit", get(audit_chain))
+        .route("/mandates/{mandate_id}/revoke", post(revoke_mandate))
         .layer(axum::middleware::from_fn_with_state(bucket, rate_limit))
         .with_state(state)
 }
@@ -129,6 +130,19 @@ async fn audit_chain(
 #[tracing::instrument(name = "health", level = "info")]
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": "paybound-gateway" }))
+}
+
+/// Instant revocation: the human kills a mandate's authority. The very next
+/// agent purchase against it is refused by the kernel (`mandate_revoked`).
+#[tracing::instrument(name = "revoke_mandate", level = "info", skip(s))]
+async fn revoke_mandate(
+    State(s): State<AppState>,
+    Path(mandate_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    ledger::repos::revoke_mandate(&s.pool, mandate_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "mandate_id": mandate_id, "revoked": true })))
 }
 
 /// Razorpay webhook receiver. Verifies the HMAC signature over the RAW body

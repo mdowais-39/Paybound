@@ -52,6 +52,8 @@ pub struct KernelInput<'a> {
     /// ₹15,000 AFA gate (the NEEDS_HUMAN resume path). All other bounds still
     /// apply; a human approval cannot exceed the per-txn cap or budget.
     pub afa_approved: bool,
+    /// True if the human has revoked this mandate's authority — refuse outright.
+    pub revoked: bool,
 }
 
 /// Evaluate a proposed cart against its mandate. Pure and total: same inputs
@@ -60,6 +62,10 @@ pub fn evaluate(input: &KernelInput<'_>) -> KernelDecision {
     let m = input.mandate;
     let cart = input.cart;
 
+    // 0. Revocation — a killed mandate can never spend, whatever else is true.
+    if input.revoked {
+        return refuse(RefusalReason::MandateRevoked);
+    }
     // 1. Authenticity — the mandate must be signed and verifiable.
     if m.verify_signature().is_err() {
         return refuse(RefusalReason::SignatureInvalid);
