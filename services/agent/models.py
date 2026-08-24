@@ -1,0 +1,48 @@
+"""Typed objects passed between the orchestrator and its workers. Workers return
+these structured objects — never free text the orchestrator could misread (the
+hand-off contract)."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Intent:
+    """The parsed shopping goal. `ambiguous` routes to the Clarification worker."""
+
+    query: str
+    max_price_paise: int | None = None
+    category: str | None = None
+    ambiguous: bool = False
+    clarification_question: str | None = None
+
+
+@dataclass
+class Candidate:
+    item_id: str
+    title: str
+    category: str
+    price_paise: int
+    score: float = 0.0
+
+
+@dataclass
+class ComposedCart:
+    cart_id: str
+    total_paise: int
+    line_items: list[dict] = field(default_factory=list)
+    confidence: float = 1.0
+
+
+@dataclass
+class OrchestratorResult:
+    """The outcome of running one purchase session."""
+
+    state: str  # COMPLETED | REFUSED | NEEDS_HUMAN | CLARIFY | PRE_CHECK_FAILED | AUTHORIZED
+    message: str
+    verdict: str | None = None
+    rule_cited: str | None = None
+    payment_link: str | None = None
+    clarification_question: str | None = None
+    cart_id: str | None = None

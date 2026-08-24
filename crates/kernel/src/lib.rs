@@ -48,6 +48,10 @@ pub struct KernelInput<'a> {
     /// If set, the cart's hash must equal this (detects price drift / item
     /// substitution between authorization and charge).
     pub expected_cart_hash: Option<&'a str>,
+    /// True once a human has given a PIN-equivalent approval — clears the
+    /// ₹15,000 AFA gate (the NEEDS_HUMAN resume path). All other bounds still
+    /// apply; a human approval cannot exceed the per-txn cap or budget.
+    pub afa_approved: bool,
 }
 
 /// Evaluate a proposed cart against its mandate. Pure and total: same inputs
@@ -84,8 +88,9 @@ pub fn evaluate(input: &KernelInput<'_>) -> KernelDecision {
     if input.running_spend_paise.saturating_add(cart.total_paise) > m.budget_total_paise {
         return refuse(RefusalReason::OverCumulativeBudget);
     }
-    // 8. AFA — above ₹15,000 needs human approval (not a hard refusal).
-    if cart.total_paise > AFA_THRESHOLD_PAISE {
+    // 8. AFA — above ₹15,000 needs human approval (not a hard refusal), unless
+    //    the human has already approved (the NEEDS_HUMAN resume path).
+    if cart.total_paise > AFA_THRESHOLD_PAISE && !input.afa_approved {
         return refuse(RefusalReason::RequiresHumanAFA);
     }
 

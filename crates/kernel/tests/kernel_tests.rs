@@ -57,6 +57,7 @@ fn input<'a>(
         running_spend_paise: running_spend,
         now,
         expected_cart_hash: None,
+        afa_approved: false,
     }
 }
 
@@ -240,6 +241,7 @@ fn cart_integrity_mismatch_on_expected_hash_drift() {
         running_spend_paise: 0,
         now: now(),
         expected_cart_hash: Some(stale_hash),
+        afa_approved: false,
     };
     assert_eq!(
         refusal(evaluate(&inp)),
@@ -253,6 +255,7 @@ fn cart_integrity_mismatch_on_expected_hash_drift() {
         running_spend_paise: 0,
         now: now(),
         expected_cart_hash: Some(&good),
+        afa_approved: false,
     };
     assert!(matches!(evaluate(&inp_ok), KernelDecision::Approved(_)));
 }
@@ -312,4 +315,38 @@ fn requires_human_afa_maps_to_needs_human_verdict_others_to_refused() {
     ] {
         assert_eq!(r.verdict(), Verdict::Refused, "{:?} should be refused", r);
     }
+}
+
+// --- AFA resume: human approval clears the ₹15,000 gate ----------------------
+
+#[test]
+fn afa_approved_by_human_allows_above_15k() {
+    let key = generate_keypair();
+    let m = IntentMandate::new_signed(
+        &key,
+        Uuid::new_v4(),
+        "user_owais",
+        5_000_000,
+        5_000_000,
+        vec!["footwear".into()],
+        vec![merchant_id()],
+        OffsetDateTime::now_utc() + Duration::hours(1),
+        "goal",
+    );
+    let c = cart(2_000_000); // ₹20,000 — above AFA
+                             // Without approval → needs human.
+    assert_eq!(
+        refusal(evaluate(&input(&m, &c, 0, now()))),
+        RefusalReason::RequiresHumanAFA
+    );
+    // With human approval → approved (other bounds still enforced).
+    let approved = KernelInput {
+        mandate: &m,
+        cart: &c,
+        running_spend_paise: 0,
+        now: now(),
+        expected_cart_hash: None,
+        afa_approved: true,
+    };
+    assert!(matches!(evaluate(&approved), KernelDecision::Approved(_)));
 }

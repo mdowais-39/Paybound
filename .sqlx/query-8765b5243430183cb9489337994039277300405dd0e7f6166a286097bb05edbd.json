@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT item_id, merchant_id, title, category, price_paise, availability\n             FROM catalog_item\n             WHERE to_tsvector('english', title || ' ' || category)\n                     @@ plainto_tsquery('english', $1)\n                OR title ILIKE $3\n             ORDER BY ts_rank(to_tsvector('english', title || ' ' || category),\n                              plainto_tsquery('english', $1)) DESC,\n                      price_paise\n             LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "item_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "merchant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "category",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "price_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "availability",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8765b5243430183cb9489337994039277300405dd0e7f6166a286097bb05edbd"
+}

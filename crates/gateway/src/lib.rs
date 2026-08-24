@@ -10,30 +10,22 @@ use axum::{
     Json, Router,
 };
 use execution::ExecutionPlane;
-use razorpay_client::{verify_webhook_signature, PaymentGateway};
+use razorpay_client::verify_webhook_signature;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// Shared state: the execution plane + the webhook secret.
-pub struct AppState<G: PaymentGateway> {
-    pub exec: Arc<ExecutionPlane<G>>,
+#[derive(Clone)]
+pub struct AppState {
+    pub exec: Arc<ExecutionPlane>,
     pub webhook_secret: Arc<String>,
 }
 
-impl<G: PaymentGateway> Clone for AppState<G> {
-    fn clone(&self) -> Self {
-        Self {
-            exec: self.exec.clone(),
-            webhook_secret: self.webhook_secret.clone(),
-        }
-    }
-}
-
 /// Build the gateway router.
-pub fn build_router<G: PaymentGateway + 'static>(state: AppState<G>) -> Router {
+pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/webhooks/razorpay", post(razorpay_webhook::<G>))
+        .route("/webhooks/razorpay", post(razorpay_webhook))
         .with_state(state)
 }
 
@@ -46,8 +38,8 @@ async fn health() -> Json<Value> {
 /// (never re-serialized), then dispatches paid/failed to the execution plane.
 /// The handlers are idempotent, so a redelivered event is safe.
 #[tracing::instrument(name = "razorpay_webhook", level = "info", skip_all)]
-async fn razorpay_webhook<G: PaymentGateway>(
-    State(s): State<AppState<G>>,
+async fn razorpay_webhook(
+    State(s): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {

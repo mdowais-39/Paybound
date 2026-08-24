@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let client = RazorpayClient::new(key_id, key_secret);
+    let client = Arc::new(RazorpayClient::new(key_id, key_secret));
     let exec = ExecutionPlane::new(pool, client, ExecConfig::default());
 
     let state = AppState {

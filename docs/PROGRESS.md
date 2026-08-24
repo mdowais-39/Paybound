@@ -104,3 +104,19 @@ block passes and is shown.
 - Whole workspace still **43 tests pass**; offline `clippy -D warnings` + `fmt` clean.
 
 **MIDPOINT MILESTONE REACHED — the system is demoable end-to-end from here on.**
+
+## Phase 6 — Buyer agent + agentic pipeline — ✅ DONE
+
+**Built (services/agent/):**
+- `precheck.py` (deterministic, pre-LLM: mandate validity, prompt-injection sanitisation, request budget), `base_agent.py` (bounded loop, request budget, checkout guardrail), `orchestrator.py` (owns the flow; ONLY checkout caller; DI of llm/mcp/db), workers: `discovery.py` (search + variants + rank, bounded to mandate), `cart_composer.py` (create_cart + confidence), `clarification.py` (asks on ambiguity).
+- `llm.py` (Gemini, provider-agnostic, retry, call counter), `mcp_client.py` (HTTP MCP), `db.py` (psycopg read).
+- Rust: `ExecutionPlane` → `Arc<dyn PaymentGateway>`; `Storefront::with_execution` (approved checkout → real payment link); kernel `afa_approved` resume; search → full-text; `merchant_id` in search view.
+- `scripts/agent_demo.sh`, `services/agent/demo.py`, `crates/harness` seed bin.
+
+**STOP-AND-TEST results:**
+- [x] A natural-language goal drives a full purchase pre-check → orchestrator → workers → kernel → execution. LIVE: "buy running shoes under 3000" (real Gemini) → **AUTHORIZED** + real payment link.
+- [x] Expired/missing mandate rejected by pre-check with **ZERO LLM calls** (asserted on the LLM call counter).
+- [x] Ambiguous goal → Clarification worker → follow-up question. LIVE: "buy me something nice" → CLARIFY with a Gemini-written question.
+- [x] >₹15,000 goal pauses at NEEDS_HUMAN and resumes on `approve()` (afa_approved) → AUTHORIZED.
+- [x] Only the orchestrator calls checkout — runtime `UnauthorizedTool` guardrail + source-level structural test.
+- **14 Python tests pass**; ruff clean. Rust: **44 tests**; clippy -D warnings + fmt clean.

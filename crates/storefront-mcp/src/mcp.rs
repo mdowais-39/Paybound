@@ -67,7 +67,14 @@ async fn call_tool(store: &Storefront, name: &str, args: &Value) -> Result<Value
         "checkout" => {
             let session_id = uuid_arg(args, "session_id")?;
             let cart_id = uuid_arg(args, "cart_id")?;
-            let result = store.checkout(session_id, cart_id).await.map_err(estr)?;
+            let afa_approved = args
+                .get("afa_approved")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let result = store
+                .checkout(session_id, cart_id, afa_approved)
+                .await
+                .map_err(estr)?;
             serde_json::to_value(result).map_err(estr)
         }
         other => Err(format!("unknown tool: {other}")),

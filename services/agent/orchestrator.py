@@ -1,0 +1,146 @@
+"""Orchestrator Agent — owns the Purchase Session flow and is the ONLY component
+permitted to call `checkout`. It runs the deterministic pre-checks BEFORE any
+LLM call, parses the goal, delegates to workers (which return typed objects, not
+free text), and advances state only on those typed returns.
+
+The whole pipeline narrows authority at each layer: workers propose, the
+orchestrator composes and is the sole gate to checkout, and the Rust kernel is
+still the final deterministic gate on money — 'agent proposes, kernel disposes',
+applied twice."""
+
+from __future__ import annotations
+
+import logging
+
+from .base_agent import BaseAgent
+from .db import Db
+from .llm import LLM
+from .models import Intent, OrchestratorResult
+from .precheck import run_prechecks
+from .workers.cart_composer import CartComposer
+from .workers.clarification import ClarificationWorker
+from .workers.discovery import DiscoveryWorker
+
+logger = logging.getLogger("paybound.agent")
+
+CONFIDENCE_THRESHOLD = 0.5
+
+_PARSE_SYSTEM = """You parse a shopping request into JSON for a bounded buying agent.
+Return ONLY a JSON object with these fields:
+  query: string — concise product search terms
+  max_price_paise: integer or null — price ceiling in paise (rupees*100) if stated
+  category: string or null — a product category if clear
+  ambiguous: boolean — true if the request is too vague to shop (e.g. "something nice")
+  clarification_question: string or null — if ambiguous, a specific follow-up question
+Only mark ambiguous when you genuinely cannot pick search terms. Prices in the
+request are in rupees; multiply by 100 for paise."""
+
+
+class Orchestrator(BaseAgent):
+    #: The orchestrator — and only the orchestrator — may call checkout.
+    allow_checkout = True
+
+    def __init__(self, mcp, llm: LLM, db: Db, request_budget: int = 12):
+        super().__init__(mcp, name="orchestrator", request_budget=request_budget)
+        self.llm = llm
+        self.db = db
+        self.discovery = DiscoveryWorker(mcp, request_budget)
+        self.cart_composer = CartComposer(mcp, request_budget)
+        self.clarification = ClarificationWorker(mcp, request_budget)
+
+    def run(
+        self,
+        session_id: str,
+        goal: str,
+        parsed_intent: Intent | None = None,
+    ) -> OrchestratorResult:
+        # 1. Pre-hand checks — deterministic, BEFORE any LLM call.
+        mandate = self.db.get_mandate_for_session(session_id)
+        pre = run_prechecks(mandate, goal, self.request_count)
+        if not pre.ok:
+            logger.info("pre_check_failed", extra={"reason": pre.reason})
+            return OrchestratorResult(
+                state="PRE_CHECK_FAILED",
+                message=f"Request rejected before reasoning: {pre.reason}.",
+                rule_cited=pre.reason,
+            )
+
+        # 2. Parse the goal (the first LLM call). Tests may inject the intent.
+        intent = parsed_intent if parsed_intent is not None else self._parse_intent(goal, mandate)
+
+        # 3. Ambiguous → ask, don't guess.
+        if intent.ambiguous:
+            question = self.clarification.ask(intent)
+            return OrchestratorResult(state="CLARIFY", message=question, clarification_question=question)
+
+        # 4. Shop — bounded to the mandate's allowed category + merchant.
+        candidates = self.discovery.search(
+            intent,
+            allowed_categories=mandate.get("allowed_categories"),
+            allowed_merchants=mandate.get("allowed_merchants"),
+        )
+        if not candidates:
+            q = "I couldn't find items matching that within your limits — want to adjust the budget or category?"
+            return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
+
+        # 5. Compose the cart (+ confidence).
+        cart = self.cart_composer.compose(session_id, candidates[0], intent)
+
+        # 6. Low confidence → route to human (same first-class path as AFA).
+        if cart.confidence < CONFIDENCE_THRESHOLD:
+            return OrchestratorResult(
+                state="NEEDS_HUMAN",
+                message="I'm not confident this matches your intent — please confirm.",
+                rule_cited="low_confidence",
+                cart_id=cart.cart_id,
+            )
+
+        # 7. Gate: the orchestrator (only) submits the cart to the kernel.
+        return self._checkout(session_id, cart.cart_id, afa_approved=False)
+
+    def approve(self, session_id: str, cart_id: str) -> OrchestratorResult:
+        """Resume a NEEDS_HUMAN session after the human's PIN-equivalent approval
+        (clears the ₹15,000 AFA gate; all other bounds still enforced)."""
+        return self._checkout(session_id, cart_id, afa_approved=True)
+
+    def _checkout(self, session_id: str, cart_id: str, afa_approved: bool) -> OrchestratorResult:
+        res = self.call_tool(
+            "checkout",
+            {"session_id": session_id, "cart_id": cart_id, "afa_approved": afa_approved},
+        )
+        verdict = res["verdict"]
+        if verdict == "approved":
+            return OrchestratorResult(
+                state="AUTHORIZED",
+                message=f"Approved. Complete payment: {res.get('payment_link')}",
+                verdict=verdict,
+                payment_link=res.get("payment_link"),
+                cart_id=cart_id,
+            )
+        if verdict == "needs_human":
+            return OrchestratorResult(
+                state="NEEDS_HUMAN",
+                message=res.get("human_message") or "This purchase needs your approval.",
+                verdict=verdict,
+                rule_cited=res.get("rule_cited"),
+                cart_id=cart_id,
+            )
+        return OrchestratorResult(
+            state="REFUSED",
+            message=res.get("human_message") or "This purchase was declined.",
+            verdict=verdict,
+            rule_cited=res.get("rule_cited"),
+            cart_id=cart_id,
+        )
+
+    def _parse_intent(self, goal: str, mandate: dict) -> Intent:
+        cats = mandate.get("allowed_categories") or []
+        user = f"Allowed categories: {cats}. Budget (paise): {mandate.get('budget_total_paise')}.\nRequest: {goal}"
+        data = self.llm.complete_json(_PARSE_SYSTEM, user)
+        return Intent(
+            query=str(data.get("query") or goal),
+            max_price_paise=data.get("max_price_paise"),
+            category=data.get("category"),
+            ambiguous=bool(data.get("ambiguous", False)),
+            clarification_question=data.get("clarification_question"),
+        )

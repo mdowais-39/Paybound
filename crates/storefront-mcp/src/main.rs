@@ -41,8 +41,19 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(8081);
     let base_url = format!("http://localhost:{port}");
 
+    // Wire the execution plane so an approved checkout creates the real payment
+    // link server-side (the agent never has a money tool).
+    let key_id = std::env::var("RAZORPAY_KEY_ID").unwrap_or_default();
+    let key_secret = std::env::var("RAZORPAY_KEY_SECRET").unwrap_or_default();
+    let client = Arc::new(razorpay_client::RazorpayClient::new(key_id, key_secret));
+    let exec = Arc::new(execution::ExecutionPlane::new(
+        pool.clone(),
+        client,
+        execution::ExecConfig::default(),
+    ));
+
     let state = AppState {
-        store: Storefront::new(pool.clone()),
+        store: Storefront::with_execution(pool.clone(), exec),
         base_url: Arc::new(base_url),
         pool,
     };

@@ -82,7 +82,11 @@ async fn signed_paid_webhook_completes_session_bad_signature_rejected(pool: PgPo
     let session = seed_session(&pool).await;
 
     // Authorize to get a pending payment_effect with a known razorpay_ref.
-    let exec = ExecutionPlane::new(pool.clone(), FakeGateway, ExecConfig::default());
+    let exec = ExecutionPlane::new(
+        pool.clone(),
+        std::sync::Arc::new(FakeGateway),
+        ExecConfig::default(),
+    );
     let auth = Authorization {
         mandate_id: Uuid::new_v4(),
         cart_hash: "h".into(),

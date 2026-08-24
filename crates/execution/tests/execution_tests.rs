@@ -93,7 +93,7 @@ async fn authorize_creates_a_payment_link_and_moves_to_paying(pool: PgPool) {
     let (session, mandate) = seed_session(&pool).await;
     let gw = FakeGateway::default();
     let calls = gw.create_calls.clone();
-    let exec = ExecutionPlane::new(pool.clone(), gw, ExecConfig::default());
+    let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
 
     let r = exec
         .authorize(session, &auth(mandate, 285_000))
@@ -113,7 +113,7 @@ async fn duplicate_authorize_does_not_double_charge(pool: PgPool) {
     let (session, mandate) = seed_session(&pool).await;
     let gw = FakeGateway::default();
     let calls = gw.create_calls.clone();
-    let exec = ExecutionPlane::new(pool.clone(), gw, ExecConfig::default());
+    let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
 
     let a = auth(mandate, 285_000);
     let r1 = exec.authorize(session, &a).await.unwrap();
@@ -144,7 +144,7 @@ async fn duplicate_authorize_does_not_double_charge(pool: PgPool) {
 async fn paid_webhook_completes_session_and_is_idempotent(pool: PgPool) {
     let (session, mandate) = seed_session(&pool).await;
     let gw = FakeGateway::default();
-    let exec = ExecutionPlane::new(pool.clone(), gw, ExecConfig::default());
+    let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
     let r = exec
         .authorize(session, &auth(mandate, 285_000))
         .await
@@ -179,7 +179,7 @@ async fn paid_webhook_completes_session_and_is_idempotent(pool: PgPool) {
 async fn failed_webhook_records_clean_failure_without_completing(pool: PgPool) {
     let (session, mandate) = seed_session(&pool).await;
     let gw = FakeGateway::default();
-    let exec = ExecutionPlane::new(pool.clone(), gw, ExecConfig::default());
+    let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
     let r = exec
         .authorize(session, &auth(mandate, 285_000))
         .await

@@ -17,6 +17,7 @@ use razorpay_client::{PaymentGateway, PaymentLinkRequest};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Static customer details for the demo storefront (test mode).
@@ -49,11 +50,12 @@ pub struct AuthorizeResult {
     pub deduplicated: bool,
 }
 
-/// The execution plane, generic over the payment gateway so it is testable
-/// against a fake without touching the network.
-pub struct ExecutionPlane<G: PaymentGateway> {
+/// The execution plane. Holds the payment gateway as a trait object so it is
+/// both embeddable (e.g. inside the storefront's checkout) and testable against
+/// a fake without touching the network.
+pub struct ExecutionPlane {
     pool: Db,
-    gateway: G,
+    gateway: Arc<dyn PaymentGateway>,
     cfg: ExecConfig,
 }
 
@@ -74,8 +76,8 @@ fn random_token() -> String {
     hex::encode(bytes)
 }
 
-impl<G: PaymentGateway> ExecutionPlane<G> {
-    pub fn new(pool: Db, gateway: G, cfg: ExecConfig) -> Self {
+impl ExecutionPlane {
+    pub fn new(pool: Db, gateway: Arc<dyn PaymentGateway>, cfg: ExecConfig) -> Self {
         Self { pool, gateway, cfg }
     }
 

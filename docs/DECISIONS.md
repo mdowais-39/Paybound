@@ -61,3 +61,12 @@ choice, with a one-line reason. Newest at the bottom of each phase.
 - **Only the agent and the webhook receipt are stood in.** The webhook receipt is `exec.on_payment_paid(razorpay_ref)` — the exact code the HMAC-verified webhook handler runs — so nothing on the money path is mocked. The payment link is a REAL test-mode object; in the live venue the real `payment_link.paid` webhook fires instead.
 - **Added a `cart_built` audit event to `storefront.create_cart`** so the end-to-end chain is complete: `session_created → cart_built → gate_decision → token_issued → payment_effect(pending) → payment_effect(success)`. `session_created` is appended by the caller at delegation (the agent takes this over in Phase 6).
 - **Reliability:** runs cleanly twice in a row (fresh session + real link each run; `verify_chain` PASS both times).
+
+## Phase 6 — Buyer agent + agentic pipeline (Python)
+
+- **Gemini API key format:** the key is an AI Studio API key used via `?key=` (NOT an OAuth Bearer token). Model `gemini-flash-latest` (a stable alias; `gemini-2.0-flash` is retired). Added a retry (429/500/503) for transient API errors.
+- **checkout triggers execution server-side.** Refactored `ExecutionPlane` to hold `Arc<dyn PaymentGateway>` (was generic) so it embeds in the storefront; `Storefront::with_execution` makes an approved `checkout` create the real payment link. The agent therefore has NO money tool — `checkout` is its only spending path, fully kernel-gated (the ACP merchant→PSP pattern). Gate-only `Storefront::new` is kept for the Phase 3 tests and the walking skeleton.
+- **AFA human-approval resume:** added `afa_approved` to the kernel input + `checkout`; the orchestrator's `approve()` re-runs checkout with it true to clear the ₹15,000 gate (all other bounds still enforced).
+- **Bounded shopper:** the Discovery worker filters search results to the mandate's allowed category + merchant *before* proposing — so the agent shops only buyable items (the kernel remains the gate). Required adding `merchant_id` to the catalog search view.
+- **Search upgraded to Postgres full-text** (`plainto_tsquery` + `ts_rank`, ILIKE fallback) so "running shoes" matches "Running Shoe" (stemming). The Phase 7 trained ranker swaps in behind the same tool.
+- **Dependency-injected orchestrator** (llm/mcp/db) so the safety properties are unit-testable with fakes — no live LLM/server/DB needed in CI: zero-LLM-before-precheck, ambiguous→clarify, needs-human pause+resume, and "workers cannot call checkout" (runtime guardrail + source-level structural test).

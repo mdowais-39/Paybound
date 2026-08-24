@@ -37,7 +37,7 @@ async fn main() -> Result<(), BoxErr> {
     let store = Storefront::new(pool.clone());
     let exec = ExecutionPlane::new(
         pool.clone(),
-        RazorpayClient::new(key_id, key_secret),
+        std::sync::Arc::new(RazorpayClient::new(key_id, key_secret)),
         ExecConfig::default(),
     );
     let ledger = AuditLedger::new(&pool);
@@ -131,7 +131,7 @@ async fn main() -> Result<(), BoxErr> {
     );
 
     // --- 4. Gate: checkout submits the cart to the kernel --------------------
-    let decision = store.checkout(session, cart.cart_id).await?;
+    let decision = store.checkout(session, cart.cart_id, false).await?;
     step(
         4,
         "Gate",

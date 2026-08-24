@@ -8,19 +8,24 @@ pub mod discovery;
 pub mod mcp;
 
 use domain::{Cart, CartLineItem, Paise};
+use execution::ExecutionPlane;
 use kernel::{evaluate, KernelDecision, KernelInput};
 use ledger::{repos, AuditLedger, Db};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use common::AppError;
 
-/// The storefront, backed by the catalog/ledger database.
+/// The storefront, backed by the catalog/ledger database. Optionally holds an
+/// execution plane so an approved `checkout` triggers the PSP charge server-
+/// side (the ACP merchant→PSP pattern) — the agent never gets a money tool.
 #[derive(Clone)]
 pub struct Storefront {
     pool: Db,
+    exec: Option<Arc<ExecutionPlane>>,
 }
 
 // ---- Tool I/O views ---------------------------------------------------------
@@ -28,6 +33,7 @@ pub struct Storefront {
 #[derive(Debug, Serialize)]
 pub struct CatalogItemView {
     pub item_id: Uuid,
+    pub merchant_id: Uuid,
     pub title: String,
     pub category: String,
     pub price_paise: Paise,
@@ -74,11 +80,24 @@ pub struct CheckoutResult {
     pub human_message: Option<String>,
     pub amount_paise: Paise,
     pub cart_hash: String,
+    /// Present only when approved AND the storefront has an execution plane: the
+    /// real Razorpay payment link the human pays. The agent never creates this.
+    pub payment_link: Option<String>,
+    pub razorpay_ref: Option<String>,
 }
 
 impl Storefront {
+    /// Gate-only storefront (checkout returns the kernel verdict; no payment).
     pub fn new(pool: Db) -> Self {
-        Self { pool }
+        Self { pool, exec: None }
+    }
+
+    /// Storefront whose approved checkouts also trigger the PSP charge.
+    pub fn with_execution(pool: Db, exec: Arc<ExecutionPlane>) -> Self {
+        Self {
+            pool,
+            exec: Some(exec),
+        }
     }
 
     /// Search the catalog. Placeholder ranking (category match first, then
@@ -88,15 +107,23 @@ impl Storefront {
         query: &str,
         limit: i64,
     ) -> Result<Vec<CatalogItemView>, AppError> {
+        // Full-text search with stemming (so "running shoes" matches "Running
+        // Shoe"), falling back to a substring match for short/OOV queries. The
+        // Phase 7 trained ranker swaps in behind this same interface.
         let pattern = format!("%{query}%");
         let rows = sqlx::query!(
-            "SELECT item_id, title, category, price_paise, availability
+            "SELECT item_id, merchant_id, title, category, price_paise, availability
              FROM catalog_item
-             WHERE title ILIKE $1 OR category ILIKE $1
-             ORDER BY (CASE WHEN category ILIKE $1 THEN 0 ELSE 1 END), price_paise
+             WHERE to_tsvector('english', title || ' ' || category)
+                     @@ plainto_tsquery('english', $1)
+                OR title ILIKE $3
+             ORDER BY ts_rank(to_tsvector('english', title || ' ' || category),
+                              plainto_tsquery('english', $1)) DESC,
+                      price_paise
              LIMIT $2",
-            pattern,
+            query,
             limit,
+            pattern,
         )
         .fetch_all(&self.pool)
         .await
@@ -106,6 +133,7 @@ impl Storefront {
             .into_iter()
             .map(|r| CatalogItemView {
                 item_id: r.item_id,
+                merchant_id: r.merchant_id,
                 title: r.title,
                 category: r.category,
                 price_paise: r.price_paise,
@@ -238,6 +266,7 @@ impl Storefront {
         &self,
         session_id: Uuid,
         cart_id: Uuid,
+        afa_approved: bool,
     ) -> Result<CheckoutResult, AppError> {
         // Reconstruct the exact cart from the persisted Cart Mandate.
         let row = sqlx::query!(
@@ -267,6 +296,7 @@ impl Storefront {
             running_spend_paise: session.running_spend_paise,
             now: OffsetDateTime::now_utc(),
             expected_cart_hash: None,
+            afa_approved,
         });
 
         let (verdict, rule_cited, human_message, new_state) = match &decision {
@@ -309,12 +339,25 @@ impl Storefront {
             .await?;
         repos::set_session_state(&self.pool, session_id, new_state).await?;
 
+        // On approval, trigger the PSP charge server-side (if wired). The agent
+        // has no money tool; checkout is the only spending path and the kernel
+        // has already approved this exact cart.
+        let (payment_link, razorpay_ref) = match (&decision, &self.exec) {
+            (KernelDecision::Approved(auth), Some(exec)) => {
+                let authd = exec.authorize(session_id, auth).await?;
+                (Some(authd.short_url), Some(authd.razorpay_ref))
+            }
+            _ => (None, None),
+        };
+
         Ok(CheckoutResult {
             verdict: verdict.to_string(),
             rule_cited,
             human_message,
             amount_paise: cart.total_paise,
             cart_hash: cart.cart_hash(),
+            payment_link,
+            razorpay_ref,
         })
     }
 }

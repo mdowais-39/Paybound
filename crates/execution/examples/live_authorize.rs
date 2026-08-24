@@ -22,7 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = PgPoolOptions::new().connect(&db).await?;
     let client = RazorpayClient::new(key_id, key_secret);
-    let exec = ExecutionPlane::new(pool.clone(), client, ExecConfig::default());
+    let exec = ExecutionPlane::new(
+        pool.clone(),
+        std::sync::Arc::new(client),
+        ExecConfig::default(),
+    );
 
     // Seed a session + mandate.
     let merchant = repos::create_merchant(&pool, "Paybound Live Demo", &json!(["upi"])).await?;

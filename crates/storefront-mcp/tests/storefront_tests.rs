@@ -105,7 +105,7 @@ async fn checkout_in_budget_is_approved(pool: PgPool) {
         .unwrap();
     assert_eq!(cart.total_paise, 150_000);
 
-    let result = store.checkout(session, cart.cart_id).await.unwrap();
+    let result = store.checkout(session, cart.cart_id, false).await.unwrap();
     assert_eq!(result.verdict, "approved");
     assert!(result.rule_cited.is_none());
 
@@ -134,7 +134,7 @@ async fn checkout_over_cap_is_refused_by_kernel(pool: PgPool) {
         .await
         .unwrap();
 
-    let result = store.checkout(session, cart.cart_id).await.unwrap();
+    let result = store.checkout(session, cart.cart_id, false).await.unwrap();
     assert_eq!(result.verdict, "refused");
     assert_eq!(result.rule_cited.as_deref(), Some("over_per_txn_cap"));
     assert!(result.human_message.is_some());
