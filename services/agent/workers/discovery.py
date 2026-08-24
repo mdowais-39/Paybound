@@ -9,8 +9,10 @@ from ..models import Candidate, Intent
 
 
 class DiscoveryWorker(BaseAgent):
-    def __init__(self, mcp, request_budget: int = 12):
+    def __init__(self, mcp, request_budget: int = 12, relevance=None):
         super().__init__(mcp, name="discovery", request_budget=request_budget)
+        #: Optional trained relevance ranker (ESCI). If None, uses the heuristic.
+        self.relevance = relevance
 
     def search(
         self,
@@ -36,23 +38,27 @@ class DiscoveryWorker(BaseAgent):
                     title=it["title"],
                     category=it["category"],
                     price_paise=it["price_paise"],
+                    merchant_id=it.get("merchant_id"),
                 )
             )
         return self._rank(candidates, intent)
 
     def _rank(self, candidates: list[Candidate], intent: Intent) -> list[Candidate]:
-        """Heuristic placeholder ranking (Phase 7 replaces with the ESCI-trained
-        model behind this same method): keep items within budget, prefer the best
-        affordable one (highest price at or under the ceiling)."""
+        """Keep items within budget, then rank by the ESCI-trained relevance
+        model when available (falling back to a cheap heuristic)."""
         cap = intent.max_price_paise
-        ranked = []
-        for c in candidates:
-            if cap is not None and c.price_paise > cap:
-                continue
-            c.score = float(c.price_paise)  # best affordable first
-            ranked.append(c)
-        ranked.sort(key=lambda c: c.score, reverse=True)
-        return ranked
+        affordable = [c for c in candidates if cap is None or c.price_paise <= cap]
+        if not affordable:
+            return []
+        if self.relevance is not None:
+            rows = [{"title": c.title, "_c": c} for c in affordable]
+            ranked = self.relevance.rank(intent.query, rows, title_key="title")
+            return [r["_c"] for r in ranked]
+        # heuristic fallback: best affordable (highest price at/under the cap)
+        for c in affordable:
+            c.score = float(c.price_paise)
+        affordable.sort(key=lambda c: c.score, reverse=True)
+        return affordable
 
     def get_variants(self, item_id: str) -> dict:
         return self.call_tool("get_variants", {"item_id": item_id})

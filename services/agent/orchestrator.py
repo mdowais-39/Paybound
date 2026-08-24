@@ -40,12 +40,21 @@ class Orchestrator(BaseAgent):
     #: The orchestrator — and only the orchestrator — may call checkout.
     allow_checkout = True
 
-    def __init__(self, mcp, llm: LLM, db: Db, request_budget: int = 12):
+    def __init__(
+        self,
+        mcp,
+        llm: LLM,
+        db: Db,
+        request_budget: int = 12,
+        relevance=None,
+        upsell=None,
+        confidence=None,
+    ):
         super().__init__(mcp, name="orchestrator", request_budget=request_budget)
         self.llm = llm
         self.db = db
-        self.discovery = DiscoveryWorker(mcp, request_budget)
-        self.cart_composer = CartComposer(mcp, request_budget)
+        self.discovery = DiscoveryWorker(mcp, request_budget, relevance=relevance)
+        self.cart_composer = CartComposer(mcp, request_budget, upsell=upsell, confidence=confidence)
         self.clarification = ClarificationWorker(mcp, request_budget)
 
     def run(
@@ -83,8 +92,13 @@ class Orchestrator(BaseAgent):
             q = "I couldn't find items matching that within your limits — want to adjust the budget or category?"
             return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
 
-        # 5. Compose the cart (+ confidence).
-        cart = self.cart_composer.compose(session_id, candidates[0], intent)
+        # 5. Compose the cart (+ upsell + confidence), bounded to allowed categories.
+        cart = self.cart_composer.compose(
+            session_id,
+            candidates[0],
+            intent,
+            allowed_categories=mandate.get("allowed_categories"),
+        )
 
         # 6. Low confidence → route to human (same first-class path as AFA).
         if cart.confidence < CONFIDENCE_THRESHOLD:

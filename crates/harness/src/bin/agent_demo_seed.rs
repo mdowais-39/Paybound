@@ -18,17 +18,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = PgPoolOptions::new().connect(&db).await?;
 
     let merchant = repos::create_merchant(&pool, "Agent Demo Sports", &json!(["upi"])).await?;
-    for (title, price) in [
-        ("Trail Running Shoe", 285_000i64),
-        ("Road Runner Lite", 210_000),
-        ("Marathon Pro (premium)", 540_000),
+    // Footwear (the primary goal) + socks (a complement the upsell model suggests).
+    for (title, category, price) in [
+        ("Trail Running Shoe", "footwear", 285_000i64),
+        ("Road Runner Lite", "footwear", 210_000),
+        ("Marathon Pro (premium)", "footwear", 540_000),
+        ("Cushioned Ankle Socks (3-pack)", "socks", 45_000),
+        ("Compression Running Socks", "socks", 60_000),
     ] {
         sqlx::query(
             "INSERT INTO catalog_item (merchant_id, title, category, price_paise, variants)
-             VALUES ($1, $2, 'footwear', $3, $4)",
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(merchant)
         .bind(title)
+        .bind(category)
         .bind(price)
         .bind(json!([{ "sku": "s", "color": "black", "size": "9", "price_paise": price }]))
         .execute(&pool)
@@ -40,9 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &key,
         Uuid::new_v4(),
         "user_owais",
-        300_000, // budget ₹3,000
-        300_000, // per-txn ₹3,000
-        vec!["footwear".into()],
+        500_000, // budget ₹5,000 (headroom for a suggested complement)
+        500_000, // per-txn ₹5,000
+        vec!["footwear".into(), "socks".into()],
         vec![merchant],
         OffsetDateTime::now_utc() + Duration::hours(1),
         "buy running shoes under ₹3,000",

@@ -151,3 +151,26 @@ def test_worker_cannot_call_checkout():
     worker = DiscoveryWorker(FakeMcp({"verdict": "approved"}))
     with pytest.raises(UnauthorizedTool):
         worker.call_tool("checkout", {"session_id": "s", "cart_id": "c"})
+
+
+class FakeConfidence:
+    """A confidence scorer stand-in returning a fixed probability."""
+
+    def __init__(self, value: float):
+        self.value = value
+
+    def score_purchase(self, feat: dict) -> float:
+        return self.value
+
+
+def test_low_confidence_routes_to_needs_human_citing_the_scorer():
+    # A trained scorer returning below threshold routes to NEEDS_HUMAN — the same
+    # first-class path as the AFA rule — with the scorer cited (not an LLM guess).
+    mcp = FakeMcp({"verdict": "approved"})
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()), confidence=FakeConfidence(0.2))
+    intent = Intent(query="shoes", max_price_paise=300000, category="footwear")
+
+    result = orch.run("s1", "buy shoes", parsed_intent=intent)
+    assert result.state == "NEEDS_HUMAN"
+    assert result.rule_cited == "low_confidence"
+    assert "checkout" not in mcp.calls  # never reached the gate

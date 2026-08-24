@@ -14,6 +14,7 @@ import sys
 from .db import PgDb
 from .llm import GeminiLLM
 from .mcp_client import HttpMcpClient
+from .ml_loader import load_confidence, load_relevance, load_upsell
 from .orchestrator import Orchestrator
 
 
@@ -25,7 +26,15 @@ def main() -> int:
     goal = sys.argv[2] if len(sys.argv) > 2 else "buy running shoes under 3000"
 
     base_url = os.environ.get("STOREFRONT_URL", "http://localhost:8081")
-    orch = Orchestrator(HttpMcpClient(base_url), GeminiLLM(), PgDb())
+    relevance, upsell, confidence = load_relevance(), load_upsell(), load_confidence()
+    print(
+        "models loaded -> "
+        f"relevance:{relevance is not None} upsell:{upsell is not None} confidence:{confidence is not None}\n"
+    )
+    orch = Orchestrator(
+        HttpMcpClient(base_url), GeminiLLM(), PgDb(),
+        relevance=relevance, upsell=upsell, confidence=confidence,
+    )
 
     print(f'GOAL: "{goal}"\n')
     result = orch.run(session_id, goal)

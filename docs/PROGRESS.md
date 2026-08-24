@@ -120,3 +120,18 @@ block passes and is shown.
 - [x] >₹15,000 goal pauses at NEEDS_HUMAN and resumes on `approve()` (afa_approved) → AUTHORIZED.
 - [x] Only the orchestrator calls checkout — runtime `UnauthorizedTool` guardrail + source-level structural test.
 - **14 Python tests pass**; ruff clean. Rust: **44 tests**; clippy -D warnings + fmt clean.
+
+## Phase 7 — Relevance / upsell / confidence ML — ✅ DONE
+
+**Built (services/{relevance,upsell,confidence}/ + agent wiring):**
+- `relevance/` — ESCI-trained XGBoost reranker (MiniLM + lexical); `train.py` reports NDCG before/after.
+- `upsell/` — market-basket + complement model from Instacart + ESCI-C + Amazon Reviews 2023 (user co-review); category→complement table.
+- `confidence/` — gradient-boosted Purchase Confidence Scorer on synthesised scenarios.
+- Agent: Discovery reranks with relevance; Cart-Composer adds an upsell complement (same-merchant/in-budget/allowed) and scores confidence; below-threshold → NEEDS_HUMAN citing the scorer. Models loaded best-effort (`ml_loader.py`), optional so CI/tests run without artifacts.
+
+**STOP-AND-TEST results:**
+- [x] `search_catalog` outperforms keyword on held-out ESCI: **NDCG@10 0.9096 → 0.9202**.
+- [x] `suggest_complements` returns sensible add-ons — LIVE: "buy running shoes under 3000" built a cart of **Trail Running Shoe ₹2850 + upsold Cushioned Ankle Socks ₹450** → AUTHORIZED.
+- [x] `score_purchase` separates clear vs ambiguous (held-out ROC-AUC ~0.999, synthesised) and a below-threshold session routes to NEEDS_HUMAN **citing the scorer** (unit test).
+- All three datasets used: Instacart (lift pairs), ESCI (relevance + 40k C pairs), Amazon Reviews 2023 (co-review, 582 keys).
+- **Python 20 tests** (agent 15 + ml 3 + smoke 2), ruff clean. Rust **44 tests**, clippy/fmt clean.

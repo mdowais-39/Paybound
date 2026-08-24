@@ -24,6 +24,7 @@ class Candidate:
     title: str
     category: str
     price_paise: int
+    merchant_id: str | None = None
     score: float = 0.0
 
 
