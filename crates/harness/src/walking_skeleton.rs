@@ -89,6 +89,7 @@ async fn main() -> Result<(), BoxErr> {
             nl_goal: &mandate.nl_goal,
             public_key: &mandate.public_key,
             signature: &mandate.signature,
+            owner_token_hash: None,
         },
     )
     .await?;

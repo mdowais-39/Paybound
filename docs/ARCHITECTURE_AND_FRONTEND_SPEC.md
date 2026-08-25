@@ -161,6 +161,16 @@ There are **three network surfaces**. Ports are the defaults used across the scr
 
 The frontend's primary backend. Rate-limited (200 req burst / 200 rps).
 
+**Identity & ownership.** Every mandate/session endpoint below except `POST /identity` and `GET /catalog/categories` requires `Authorization: Bearer <token>`, and enforces that the caller only sees/acts on **their own** mandates and sessions — not anyone else's. This closes what used to be a real gap (anyone with a session ID could read anyone's audit trail or revoke anyone's mandate).
+
+#### `POST /identity`
+Mint a bearer token. No auth required (this is how a caller gets one). The raw token is returned **exactly once** — only its SHA-256 hash is ever stored, so store it client-side (e.g. `localStorage`) and it can't be recovered if lost; mint a new one instead.
+```json
+// 200 OK
+{ "token": "pb_08f28071ade04782b6018cf50dd3388e" }
+```
+Send it on every subsequent call: `Authorization: Bearer pb_08f28071ade04782b6018cf50dd3388e`. The **same token works on both the gateway and the agent API** (§4C) — one identity, both services, verified against the same `identity` table.
+
 #### `GET /health`
 Liveness check.
 ```json
@@ -168,8 +178,8 @@ Liveness check.
 { "status": "ok", "service": "paybound-gateway" }
 ```
 
-#### `GET /sessions/{session_id}/audit`
-The audit-trail read surface — the "why every rupee moved" artifact. Powers the audit viewer.
+#### `GET /sessions/{session_id}/audit` 🔒
+The audit-trail read surface — the "why every rupee moved" artifact. Powers the audit viewer. 401 with no/invalid token; 403 if the session belongs to a different identity.
 ```json
 // 200 OK
 {
@@ -192,15 +202,15 @@ The audit-trail read surface — the "why every rupee moved" artifact. Powers th
 // 500 on DB error (plain-text body)
 ```
 
-#### `POST /mandates/{mandate_id}/revoke`
-Instant kill-switch. The very next agent purchase against this mandate is refused with `mandate_revoked`.
+#### `POST /mandates/{mandate_id}/revoke` 🔒
+Instant kill-switch. The very next agent purchase against this mandate is refused with `mandate_revoked`. 403 if the mandate belongs to a different identity.
 ```json
 // 200 OK
 { "mandate_id": "…", "revoked": true }
 // 500 on DB error (plain-text body)
 ```
 
-#### `POST /mandates`
+#### `POST /mandates` 🔒
 Create a signed Intent Mandate **and its one bound session** in one call — the frontend's entry point (replaces the old `try_it_seed`/`agent_demo_seed` dev binaries). Every goal the customer later shops with (`POST /sessions/{id}/run` on the agent API, §4C) runs against this **same** session, so `running_spend_paise` correctly accumulates across every purchase made under the mandate — not just the first.
 ```json
 // request — only budget_total_paise and per_txn_cap_paise are required
@@ -223,8 +233,8 @@ Create a signed Intent Mandate **and its one bound session** in one call — the
 // 400 if per_txn_cap_paise > budget_total_paise, either amount <= 0, or no merchant resolves
 ```
 
-#### `GET /mandates`
-List mandates newest-first, each joined to its bound session's live state and spend — feeds the Mandate Console directly.
+#### `GET /mandates` 🔒
+List **the caller's own** mandates newest-first, each joined to its bound session's live state and spend — feeds the Mandate Console directly. Scoped by the bearer token — never returns another identity's mandates.
 ```json
 // 200 OK
 [{
@@ -235,8 +245,8 @@ List mandates newest-first, each joined to its bound session's live state and sp
 }]
 ```
 
-#### `GET /sessions/{session_id}`
-A session's live state + spend + its mandate's bounds + its latest cart — what the shop page polls while (or after) the agent runs.
+#### `GET /sessions/{session_id}` 🔒
+A session's live state + spend + its mandate's bounds + its latest cart — what the shop page polls while (or after) the agent runs. 403 if the session belongs to a different identity.
 ```json
 // 200 OK
 {
@@ -262,6 +272,10 @@ Returns `200` (handled/ignored), `401` (bad signature), `400` (bad JSON), `500` 
 
 The agent's channel. The frontend generally does **not** call `/mcp` directly (that's the agent's job) but **does** use the discovery + read endpoints.
 
+**Real, multi-merchant catalog.** The demo catalog now spans **two distinct, non-overlapping merchants** built from real ABO product data — "Paybound Demo Store" (general, ~1000 items) and "Stone & Beam Living" (furniture specialty, ~300 items, real ABO brands "Stone & Beam"/"Rivet"). A mandate's `allowed_merchants` (§4A `POST /mandates`) already supports scoping to either one; pass `merchant_id` to target the specialty store. `GET /catalog/categories?merchant_id=` returns the right list for whichever merchant is selected.
+
+**Search retrieval.** `search_catalog` matches if **any** query term is present (not all of them), so a phrase like "study table" still finds real matches (e.g. "...Side Table") even though no title literally contains the word "study" — the trained relevance ranker (MiniLM + XGBoost) then reranks that pool for true relevance. It's still literal-term matching, not full semantic embedding search (the schema has an unused `vector(384)` column reserved for that as a future upgrade) — so an extremely oblique phrasing can still occasionally miss, but the common "one word doesn't match verbatim" case that used to zero out results is fixed.
+
 #### `POST /mcp` — JSON-RPC 2.0
 Methods: `initialize`, `tools/list`, `tools/call`. Example:
 ```json
@@ -284,9 +298,9 @@ Methods: `initialize`, `tools/list`, `tools/call`. Example:
 
 ### 4C. Agent API (Python, FastAPI) — `http://localhost:8092`
 
-A thin HTTP shell around the existing `Orchestrator` — no new business logic, just an HTTP handle onto it. Models/LLM/MCP client are built once at process startup, not per request.
+A thin HTTP shell around the existing `Orchestrator` — no new business logic, just an HTTP handle onto it. Models/LLM/MCP client are built once at process startup, not per request. Both endpoints below require `Authorization: Bearer <token>` — **the same token minted by the gateway's `POST /identity`** (§4A); this service checks the same `identity` table and the same per-session ownership rule.
 
-#### `POST /sessions/{session_id}/run`
+#### `POST /sessions/{session_id}/run` 🔒
 Run the agent on one natural-language goal, against a session created by `POST /mandates` (§4A). Safe to call repeatedly on the same session for a new goal each time.
 ```json
 // request
@@ -300,10 +314,11 @@ Run the agent on one natural-language goal, against a session created by `POST /
   "trace_id": "6c3693abc207316a62753e3b8b0635d8",   // distributed-trace id
   "llm_calls": 1                                     // honesty signal: pre-checks ran before this
 }
-// 404 if the session doesn't exist (or has no mandate); 500 on an unexpected error
+// 401 missing/invalid token; 403 if the session belongs to a different identity;
+// 404 if the session doesn't exist; 500 on an unexpected error
 ```
 
-#### `POST /sessions/{session_id}/approve`
+#### `POST /sessions/{session_id}/approve` 🔒
 Human approval for a `NEEDS_HUMAN` session (the >₹15,000 AFA gate, or a low-confidence match) — resumes checkout with the PIN-equivalent flag set. All other kernel bounds still apply.
 ```json
 // request
@@ -494,14 +509,17 @@ The product has **three surfaces**, matching the three things a customer needs: 
 
 | Method + path | Service | Purpose |
 |---|---|---|
-| `POST /mandates` | gateway :8080 | Create a signed mandate + its session |
-| `GET /mandates` | gateway :8080 | List mandates with live spend + state |
-| `GET /sessions/{id}` | gateway :8080 | Session state + spend + mandate bounds |
-| `GET /sessions/{id}/audit` | gateway :8080 | The hash-chained, narrated audit trail |
-| `POST /mandates/{id}/revoke` | gateway :8080 | Instant kill-switch |
-| `GET /catalog/categories` | gateway :8080 | Category list for the mandate form |
-| `POST /sessions/{id}/run` | agent API :8092 | Run the agent on one goal |
-| `POST /sessions/{id}/approve` | agent API :8092 | Resume a NEEDS_HUMAN session |
+| `POST /identity` | gateway :8080 | Mint a bearer token (public) |
+| `POST /mandates` 🔒 | gateway :8080 | Create a signed mandate + its session |
+| `GET /mandates` 🔒 | gateway :8080 | List the caller's own mandates with live spend + state |
+| `GET /sessions/{id}` 🔒 | gateway :8080 | Session state + spend + mandate bounds |
+| `GET /sessions/{id}/audit` 🔒 | gateway :8080 | The hash-chained, narrated audit trail |
+| `POST /mandates/{id}/revoke` 🔒 | gateway :8080 | Instant kill-switch |
+| `GET /catalog/categories` | gateway :8080 | Category list for the mandate form (public) |
+| `POST /sessions/{id}/run` 🔒 | agent API :8092 | Run the agent on one goal |
+| `POST /sessions/{id}/approve` 🔒 | agent API :8092 | Resume a NEEDS_HUMAN session |
+
+🔒 = requires `Authorization: Bearer <token>` and only permits the owning identity — see §4A "Identity & ownership".
 
 **One command brings up the whole backend:**
 ```bash
@@ -512,6 +530,11 @@ This starts storefront-mcp (:8081), the gateway (:8080), and the agent API (:809
 **Design note — why one mandate now spans one long-lived session:** `POST /mandates` creates exactly one session with the mandate, and every subsequent `POST /sessions/{id}/run` call reuses that same session for a new goal. This matters for correctness, not just convenience: `running_spend_paise` lives on the session row and is what the kernel checks against `budget_total_paise` — so a customer shopping multiple times against one mandate has their spend correctly tracked *cumulatively*, and the budget cap is genuinely enforced across a shopping session, not silently reset on every purchase.
 
 **Not built (intentionally out of scope for now):** `GET /catalog/search` (a direct catalog browse endpoint) — the frontend's shopping flow goes through the agent (`/sessions/{id}/run`), not a traditional product browser, so this wasn't needed for the spec above. Add it if the frontend design changes to include a plain catalog browsing page.
+
+**Three limitations closed this pass, verified live (not just built):**
+- **Auth/ownership** — every mandate/session endpoint now requires a bearer token (`POST /identity`) and enforces per-identity ownership. Verified with two separate identities: the non-owner got 403 on read, revoke, *and* on running the agent against the other's session; the owner's own calls succeeded normally.
+- **Multi-merchant** — the catalog now has two real, non-overlapping, brand-distinct merchants (general store + a furniture specialty), not one. Verified a mandate scoped to only the specialty merchant correctly returned only its categories and found/authorized a real item from its catalog.
+- **Search recall** — `search_catalog` now matches on any query term, not all of them; verified the two known-broken cases from manual testing ("office chair", "study table") both now return correct, sensibly-ranked results.
 
 ---
 

@@ -31,6 +31,10 @@ pub struct NewIntentMandate<'a> {
     pub nl_goal: &'a str,
     pub public_key: &'a str,
     pub signature: &'a str,
+    /// SHA-256 hex hash of the bearer token that created this mandate — who
+    /// is allowed to list, read, or revoke it. `None` only for pre-auth data
+    /// (dev seed binaries) that predates identity.
+    pub owner_token_hash: Option<&'a str>,
 }
 
 /// Insert a merchant, returning its id.
@@ -55,8 +59,8 @@ pub async fn create_intent_mandate(pool: &Db, m: NewIntentMandate<'_>) -> Result
     let id = sqlx::query_scalar!(
         "INSERT INTO intent_mandate
            (mandate_id, payer, budget_total_paise, per_txn_cap_paise, allowed_categories,
-            allowed_merchants, ttl, nl_goal, public_key, signature)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            allowed_merchants, ttl, nl_goal, public_key, signature, owner_token_hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          RETURNING mandate_id",
         m.mandate_id,
         m.payer,
@@ -68,11 +72,63 @@ pub async fn create_intent_mandate(pool: &Db, m: NewIntentMandate<'_>) -> Result
         m.nl_goal,
         m.public_key,
         m.signature,
+        m.owner_token_hash,
     )
     .fetch_one(pool)
     .await
     .map_err(db_err)?;
     Ok(id)
+}
+
+/// Store a newly minted identity's token hash (the raw token is never
+/// persisted — only its SHA-256 hex hash, so a DB leak can't recover it).
+pub async fn create_identity(pool: &Db, token_hash: &str) -> Result<(), AppError> {
+    sqlx::query!("INSERT INTO identity (token_hash) VALUES ($1)", token_hash)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+/// Whether a presented bearer token's hash is a known, valid identity.
+pub async fn identity_exists(pool: &Db, token_hash: &str) -> Result<bool, AppError> {
+    let row = sqlx::query_scalar!(
+        "SELECT 1 AS \"exists!\" FROM identity WHERE token_hash = $1",
+        token_hash
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(row.is_some())
+}
+
+/// A mandate's owner (`None` for pre-auth dev data) — used to check whether
+/// a presented token is allowed to read/act on it.
+pub async fn get_mandate_owner(pool: &Db, mandate_id: Uuid) -> Result<Option<String>, AppError> {
+    let row = sqlx::query_scalar!(
+        "SELECT owner_token_hash FROM intent_mandate WHERE mandate_id = $1",
+        mandate_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?
+    .ok_or_else(|| AppError::NotFound(format!("mandate {mandate_id}")))?;
+    Ok(row)
+}
+
+/// A session's mandate's owner — used to authorize reads/actions on the
+/// session (audit, agent run/approve) by the mandate that owns it.
+pub async fn get_session_owner(pool: &Db, session_id: Uuid) -> Result<Option<String>, AppError> {
+    let row = sqlx::query_scalar!(
+        "SELECT m.owner_token_hash FROM purchase_session s
+         JOIN intent_mandate m USING (mandate_id) WHERE s.session_id = $1",
+        session_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?
+    .ok_or_else(|| AppError::NotFound(format!("session {session_id}")))?;
+    Ok(row)
 }
 
 /// Open a new purchase session bound to a mandate (state = DELEGATED).
@@ -230,7 +286,14 @@ pub struct MandateSummaryRow {
 
 /// List mandates newest-first, each joined to the (first) session created
 /// with it — the shape the Mandate Console renders directly.
-pub async fn list_mandates(pool: &Db, limit: i64) -> Result<Vec<MandateSummaryRow>, AppError> {
+/// List mandates OWNED BY `owner_token_hash`, newest-first, each joined to
+/// the (first) session created with it. Scoped by owner so one identity can
+/// never see another's mandates — the Mandate Console's data source.
+pub async fn list_mandates(
+    pool: &Db,
+    owner_token_hash: &str,
+    limit: i64,
+) -> Result<Vec<MandateSummaryRow>, AppError> {
     let rows = sqlx::query!(
         "SELECT m.mandate_id, m.payer, m.budget_total_paise, m.per_txn_cap_paise,
                 m.allowed_categories, m.allowed_merchants, m.ttl, m.nl_goal,
@@ -242,8 +305,10 @@ pub async fn list_mandates(pool: &Db, limit: i64) -> Result<Vec<MandateSummaryRo
              SELECT session_id, state, running_spend_paise FROM purchase_session
              WHERE mandate_id = m.mandate_id ORDER BY created_at ASC LIMIT 1
          ) s ON true
+         WHERE m.owner_token_hash = $2
          ORDER BY m.created_at DESC LIMIT $1",
-        limit
+        limit,
+        owner_token_hash,
     )
     .fetch_all(pool)
     .await

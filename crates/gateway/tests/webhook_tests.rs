@@ -68,6 +68,7 @@ async fn seed_session(pool: &PgPool) -> Uuid {
             nl_goal: "goal",
             public_key: "deadbeef",
             signature: "cafebabe",
+            owner_token_hash: None,
         },
     )
     .await

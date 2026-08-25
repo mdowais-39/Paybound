@@ -28,6 +28,7 @@ async fn seed_session(pool: &PgPool) -> Uuid {
             nl_goal: "buy running shoes under ₹3,000",
             public_key: "deadbeef",
             signature: "cafebabe",
+            owner_token_hash: None,
         },
     )
     .await

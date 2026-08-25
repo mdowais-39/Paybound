@@ -68,6 +68,7 @@ async fn audit_endpoint_returns_narrated_verified_chain(pool: PgPool) {
             nl_goal: "buy shoes",
             public_key: "d",
             signature: "s",
+            owner_token_hash: None,
         },
     )
     .await
@@ -99,6 +100,12 @@ async fn audit_endpoint_returns_narrated_verified_chain(pool: PgPool) {
         .await
         .unwrap();
 
+    // A caller must be a known identity to call any protected endpoint at
+    // all; this session's mandate has no owner (pre-auth data), so any valid
+    // identity may read it.
+    let token_hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(b"test-token"));
+    repos::create_identity(&pool, &token_hash).await.unwrap();
+
     let exec = ExecutionPlane::new(pool.clone(), Arc::new(FakeGateway), ExecConfig::default());
     let app = build_router(AppState {
         exec: Arc::new(exec),
@@ -110,6 +117,7 @@ async fn audit_endpoint_returns_narrated_verified_chain(pool: PgPool) {
         .oneshot(
             Request::builder()
                 .uri(format!("/sessions/{session}/audit"))
+                .header("Authorization", "Bearer test-token")
                 .body(Body::empty())
                 .unwrap(),
         )

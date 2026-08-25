@@ -13,6 +13,8 @@ import psycopg
 class Db(Protocol):
     def get_mandate_for_session(self, session_id: str) -> dict: ...
     def get_session_state(self, session_id: str) -> str: ...
+    def identity_exists(self, token_hash: str) -> bool: ...
+    def get_session_owner(self, session_id: str) -> str | None: ...
 
 
 class PgDb:
@@ -48,6 +50,26 @@ class PgDb:
         with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT state FROM purchase_session WHERE session_id = %s", (session_id,)
+            )
+            row = cur.fetchone()
+        if not row:
+            raise LookupError(f"no session {session_id}")
+        return row[0]
+
+    def identity_exists(self, token_hash: str) -> bool:
+        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM identity WHERE token_hash = %s", (token_hash,))
+            return cur.fetchone() is not None
+
+    def get_session_owner(self, session_id: str) -> str | None:
+        """A session's mandate's owner token hash, or None if the session
+        doesn't exist (mirrors the gateway's ownership model exactly: a
+        session with no owner — pre-auth data — is open to any identity)."""
+        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT m.owner_token_hash FROM purchase_session s
+                   JOIN intent_mandate m USING (mandate_id) WHERE s.session_id = %s""",
+                (session_id,),
             )
             row = cur.fetchone()
         if not row:

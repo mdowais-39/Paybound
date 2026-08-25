@@ -7,9 +7,17 @@ here are SYNTHESIZED per category from plausible ₹ ranges, deterministically
 seeded per item so re-runs are stable. This is stated openly (Part F honesty):
 the catalog's attributes/variants are real ABO data; the ₹ prices are generated.
 
+Each item also carries a real ABO `brand` value (e.g. "Amazon Brand - Solimo",
+"Stone & Beam", "AmazonBasics") — real, distinct retailer-style identities
+already present in the data, not invented. `--brand-includes`/`--brand-excludes`
+use that to split ONE dataset into a genuine multi-merchant marketplace with
+non-overlapping catalogs, instead of one store holding everything.
+
 Usage:
-    python data/ingest_abo.py            # ~1000 items, one demo merchant
+    python data/ingest_abo.py                                  # ~1000 items, one general merchant
     python data/ingest_abo.py --limit 500
+    python data/ingest_abo.py --merchant "Stone & Beam Living" --brand-includes "Stone & Beam,Rivet"
+    python data/ingest_abo.py --brand-excludes "Stone & Beam,Rivet"   # the general store, minus that specialty
 """
 
 from __future__ import annotations
@@ -132,11 +140,31 @@ def iter_items(shard_path: Path):
                 yield json.loads(line)
 
 
+def _brand_matches(item: dict, needles: list[str]) -> bool:
+    brand = english_value(item.get("brand")) or ""
+    brand_lower = brand.lower()
+    return any(n.lower() in brand_lower for n in needles)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=1000, help="max items to ingest")
     ap.add_argument("--shards", type=int, default=2, help="ABO shards to scan")
+    ap.add_argument("--merchant", default=MERCHANT_NAME, help="target merchant name (created if missing)")
+    ap.add_argument(
+        "--brand-includes",
+        default=None,
+        help="comma-separated substrings; keep only items whose real ABO brand matches one of them",
+    )
+    ap.add_argument(
+        "--brand-excludes",
+        default=None,
+        help="comma-separated substrings; skip items whose real ABO brand matches one of them "
+        "(so a general store doesn't duplicate a specialty store's items)",
+    )
     args = ap.parse_args()
+    includes = [b.strip() for b in args.brand_includes.split(",")] if args.brand_includes else None
+    excludes = [b.strip() for b in args.brand_excludes.split(",")] if args.brand_excludes else None
 
     db_url = os.environ.get("DATABASE_URL") or os.environ.get("PAYBOUND_DATABASE_URL")
     if not db_url:
@@ -153,6 +181,10 @@ def main() -> int:
         for item in iter_items(shard):
             if len(curated) >= args.limit:
                 break
+            if includes is not None and not _brand_matches(item, includes):
+                continue
+            if excludes is not None and _brand_matches(item, excludes):
+                continue
             title = english_value(item.get("item_name"))
             ptypes = item.get("product_type") or []
             product_type = ptypes[0].get("value") if ptypes else None
@@ -169,12 +201,13 @@ def main() -> int:
                 }
             )
 
-    print(f"curated {len(curated)} items; writing to DB ...", flush=True)
+    merchant_name = args.merchant
+    print(f"curated {len(curated)} items for '{merchant_name}'; writing to DB ...", flush=True)
 
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
-            # One demo merchant; clear its catalog so re-runs are clean/idempotent.
-            cur.execute("SELECT merchant_id FROM merchant WHERE name = %s", (MERCHANT_NAME,))
+            # One merchant per run; clear its catalog so re-runs are clean/idempotent.
+            cur.execute("SELECT merchant_id FROM merchant WHERE name = %s", (merchant_name,))
             row = cur.fetchone()
             if row:
                 merchant_id = row[0]
@@ -182,7 +215,7 @@ def main() -> int:
             else:
                 cur.execute(
                     "INSERT INTO merchant (name, allowed_methods) VALUES (%s, %s::jsonb) RETURNING merchant_id",
-                    (MERCHANT_NAME, json.dumps(["upi", "card"])),
+                    (merchant_name, json.dumps(["upi", "card"])),
                 )
                 merchant_id = cur.fetchone()[0]
 
@@ -197,7 +230,7 @@ def main() -> int:
             )
         conn.commit()
 
-    print(f"done: merchant '{MERCHANT_NAME}' now has {len(curated)} catalog items.", flush=True)
+    print(f"done: merchant '{merchant_name}' now has {len(curated)} catalog items.", flush=True)
     return 0
 
 

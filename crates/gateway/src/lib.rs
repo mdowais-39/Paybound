@@ -100,6 +100,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/mandates", post(create_mandate).get(list_mandates))
         .route("/mandates/{mandate_id}/revoke", post(revoke_mandate))
         .route("/catalog/categories", get(list_categories))
+        .route("/identity", post(create_identity))
         .layer(cors)
         .layer(axum::middleware::from_fn_with_state(bucket, rate_limit))
         .with_state(state)
@@ -112,7 +113,10 @@ pub fn build_router(state: AppState) -> Router {
 async fn audit_chain(
     State(s): State<AppState>,
     Path(session_id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    require_session_owner(&s, session_id, &owner_hash).await?;
     let ledger = AuditLedger::new(&s.pool);
     let chain = ledger
         .list_chain(session_id)
@@ -157,11 +161,45 @@ async fn health() -> Json<Value> {
 async fn revoke_mandate(
     State(s): State<AppState>,
     Path(mandate_id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    let owner = repos::get_mandate_owner(&s.pool, mandate_id)
+        .await
+        .map_err(|e| match e {
+            common::AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            other => internal(other),
+        })?;
+    if matches!(&owner, Some(h) if h != &owner_hash) {
+        return Err(forbidden("not your mandate"));
+    }
     ledger::repos::revoke_mandate(&s.pool, mandate_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "mandate_id": mandate_id, "revoked": true })))
+}
+
+/// Shared ownership check for session-scoped endpoints (audit, get). A
+/// session created before identity existed (`owner_token_hash IS NULL`) has
+/// no owner to check against, so it stays openly readable — only sessions
+/// created through the (now always-authenticated) `POST /mandates` are
+/// actually protected. 404 if the session doesn't exist, 403 if it has an
+/// owner and it isn't the caller.
+async fn require_session_owner(
+    s: &AppState,
+    session_id: Uuid,
+    owner_hash: &str,
+) -> Result<(), (StatusCode, String)> {
+    let owner = repos::get_session_owner(&s.pool, session_id)
+        .await
+        .map_err(|e| match e {
+            common::AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            other => internal(other),
+        })?;
+    if matches!(&owner, Some(h) if h != owner_hash) {
+        return Err(forbidden("not your session"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +233,47 @@ fn bad_request(msg: impl Into<String>) -> (StatusCode, String) {
 fn internal(e: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
+fn unauthorized(msg: impl Into<String>) -> (StatusCode, String) {
+    (StatusCode::UNAUTHORIZED, msg.into())
+}
+fn forbidden(msg: impl Into<String>) -> (StatusCode, String) {
+    (StatusCode::FORBIDDEN, msg.into())
+}
+
+fn hash_token(token: &str) -> String {
+    hex::encode(<sha2::Sha256 as sha2::Digest>::digest(token.as_bytes()))
+}
+
+/// Pull `Authorization: Bearer <token>` and verify it against a known
+/// identity, returning the token's hash — the value ownership is compared
+/// against everywhere below. 401 if missing, malformed, or unrecognized.
+async fn authenticate(s: &AppState, headers: &HeaderMap) -> Result<String, (StatusCode, String)> {
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| unauthorized("missing Authorization: Bearer <token>"))?;
+    let hash = hash_token(raw);
+    if !repos::identity_exists(&s.pool, &hash)
+        .await
+        .map_err(internal)?
+    {
+        return Err(unauthorized("unknown or invalid token"));
+    }
+    Ok(hash)
+}
+
+/// Mint a new identity. The raw token is returned exactly once and never
+/// stored — only its SHA-256 hash is, so it can't be recovered from the DB.
+/// No auth required (this IS how a caller gets a token in the first place).
+#[tracing::instrument(name = "create_identity", level = "info", skip(s))]
+async fn create_identity(State(s): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
+    let token = format!("pb_{}", Uuid::new_v4().simple());
+    repos::create_identity(&s.pool, &hash_token(&token))
+        .await
+        .map_err(internal)?;
+    Ok(Json(json!({ "token": token })))
+}
 
 /// Create a signed Intent Mandate + the one session bound to it, so a
 /// customer can grant an agent bounded shopping authority from the frontend
@@ -205,8 +284,10 @@ fn internal(e: impl std::fmt::Display) -> (StatusCode, String) {
 #[tracing::instrument(name = "create_mandate", level = "info", skip(s, req))]
 async fn create_mandate(
     State(s): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<CreateMandateReq>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
     if req.budget_total_paise <= 0 || req.per_txn_cap_paise <= 0 {
         return Err(bad_request(
             "budget_total_paise and per_txn_cap_paise must be > 0",
@@ -265,6 +346,7 @@ async fn create_mandate(
             nl_goal: &mandate.nl_goal,
             public_key: &mandate.public_key,
             signature: &mandate.signature,
+            owner_token_hash: Some(&owner_hash),
         },
     )
     .await
@@ -297,8 +379,14 @@ async fn create_mandate(
 /// List mandates newest-first, each with its bound session's live state and
 /// spend — feeds the Mandate Console's list + spend meters.
 #[tracing::instrument(name = "list_mandates", level = "info", skip(s))]
-async fn list_mandates(State(s): State<AppState>) -> Result<Json<Value>, (StatusCode, String)> {
-    let rows = repos::list_mandates(&s.pool, 100).await.map_err(internal)?;
+async fn list_mandates(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    let rows = repos::list_mandates(&s.pool, &owner_hash, 100)
+        .await
+        .map_err(internal)?;
     let out: Vec<Value> = rows
         .into_iter()
         .map(|r| {
@@ -327,7 +415,10 @@ async fn list_mandates(State(s): State<AppState>) -> Result<Json<Value>, (Status
 async fn get_session(
     State(s): State<AppState>,
     Path(session_id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    require_session_owner(&s, session_id, &owner_hash).await?;
     let r = repos::get_session_summary(&s.pool, session_id)
         .await
         .map_err(|e| match e {

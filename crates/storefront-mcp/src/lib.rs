@@ -100,28 +100,32 @@ impl Storefront {
         }
     }
 
-    /// Search the catalog. Placeholder ranking (category match first, then
-    /// cheaper): the Phase 7 trained ranker swaps in behind this same signature.
+    /// Search the catalog. OR-joined full-text retrieval (any query term can
+    /// match, not all of them — see `or_tsquery`) so a genuinely relevant item
+    /// is never invisible just because it's missing one word of the phrase
+    /// (e.g. "study table" still finds items titled "...Side Table" — nothing
+    /// in this catalog literally says "study"). `ts_rank` still favors items
+    /// matching MORE terms, and the discovery worker's trained relevance
+    /// ranker (MiniLM + XGBoost) reranks this candidate pool afterward for
+    /// true relevance — this query's job is recall, not precision.
     pub async fn search_catalog(
         &self,
         query: &str,
         limit: i64,
     ) -> Result<Vec<CatalogItemView>, AppError> {
-        // Full-text search with stemming (so "running shoes" matches "Running
-        // Shoe"), falling back to a substring match for short/OOV queries. The
-        // Phase 7 trained ranker swaps in behind this same interface.
         let pattern = format!("%{query}%");
+        let tsquery = or_tsquery(query);
         let rows = sqlx::query!(
             "SELECT item_id, merchant_id, title, category, price_paise, availability
              FROM catalog_item
              WHERE to_tsvector('english', title || ' ' || category)
-                     @@ plainto_tsquery('english', $1)
+                     @@ to_tsquery('english', $1)
                 OR title ILIKE $3
              ORDER BY ts_rank(to_tsvector('english', title || ' ' || category),
-                              plainto_tsquery('english', $1)) DESC,
+                              to_tsquery('english', $1)) DESC,
                       price_paise
              LIMIT $2",
-            query,
+            tsquery,
             limit,
             pattern,
         )
@@ -369,4 +373,28 @@ impl Storefront {
 
 fn db(e: sqlx::Error) -> AppError {
     AppError::Internal(format!("db: {e}"))
+}
+
+/// Build a `to_tsquery`-safe OR-of-terms string from free text: alphanumeric
+/// words joined by `|`, so ANY term matching is enough (recall over
+/// precision — see `search_catalog`). `to_tsquery` requires well-formed
+/// syntax (unlike `plainto_tsquery`, it errors on stray punctuation), so
+/// terms are sanitized before joining; an all-punctuation/empty query falls
+/// back to a token that can't match anything, leaving the ILIKE fallback in
+/// `search_catalog` as the only path.
+fn or_tsquery(query: &str) -> String {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    if terms.is_empty() {
+        "zzz_no_match_zzz".to_string()
+    } else {
+        terms.join(" | ")
+    }
 }

@@ -63,6 +63,7 @@ async fn seed_session(pool: &PgPool, merchant: Uuid, per_txn: i64, budget: i64) 
             nl_goal: &m.nl_goal,
             public_key: &m.public_key,
             signature: &m.signature,
+            owner_token_hash: None,
         },
     )
     .await

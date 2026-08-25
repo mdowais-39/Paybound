@@ -44,6 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             nl_goal: "live demo purchase",
             public_key: "deadbeef",
             signature: "cafebabe",
+            owner_token_hash: None,
         },
     )
     .await?;

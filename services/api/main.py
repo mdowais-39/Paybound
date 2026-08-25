@@ -13,10 +13,11 @@ Run: uvicorn services.api.main:app --port 8090
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -81,6 +82,34 @@ class ApproveRequest(BaseModel):
     cart_id: str
 
 
+def _hash_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _authenticate(authorization: str | None) -> str:
+    """Verify `Authorization: Bearer <token>` against the same `identity`
+    table the gateway checks, and return the token's hash. Mirrors the
+    gateway's `authenticate` exactly, so a token minted via `POST /identity`
+    (gateway) works here too — one identity, both services."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing Authorization: Bearer <token>")
+    token_hash = _hash_token(authorization.removeprefix("Bearer "))
+    if not _state["db"].identity_exists(token_hash):
+        raise HTTPException(status_code=401, detail="unknown or invalid token")
+    return token_hash
+
+
+def _require_session_owner(session_id: str, owner_hash: str) -> None:
+    """Mirrors the gateway's ownership rule: a session with no owner
+    (pre-auth data) stays open to any identity; otherwise it must match."""
+    try:
+        owner = _state["db"].get_session_owner(session_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    if owner is not None and owner != owner_hash:
+        raise HTTPException(status_code=403, detail="not your session")
+
+
 def _result_json(orch: Orchestrator, result, trace_id: str | None) -> dict:
     return {
         "state": result.state,
@@ -101,11 +130,13 @@ def health() -> dict:
 
 
 @app.post("/sessions/{session_id}/run")
-def run_session(session_id: str, req: RunRequest) -> dict:
+def run_session(session_id: str, req: RunRequest, authorization: str | None = Header(None)) -> dict:
     """Run the agent on one natural-language goal against an existing session
     (created via the gateway's `POST /mandates`). Safe to call repeatedly on
     the same session for a new goal each time — spend accumulates correctly
     because it's the same session's `running_spend_paise` the kernel checks."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
     orch = _orchestrator()
     tracer = _state["tracer"]
     trace_id = None
@@ -124,11 +155,13 @@ def run_session(session_id: str, req: RunRequest) -> dict:
 
 
 @app.post("/sessions/{session_id}/approve")
-def approve_session(session_id: str, req: ApproveRequest) -> dict:
+def approve_session(session_id: str, req: ApproveRequest, authorization: str | None = Header(None)) -> dict:
     """Human approval for a NEEDS_HUMAN session (the >₹15,000 AFA gate, or a
     low-confidence match) — resumes checkout with the PIN-equivalent flag set.
     All other kernel bounds still apply; approval cannot exceed the per-txn
     cap or budget."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
     orch = _orchestrator()
     tracer = _state["tracer"]
     trace_id = None

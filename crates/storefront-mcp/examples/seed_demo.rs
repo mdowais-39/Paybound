@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
             nl_goal: &m.nl_goal,
             public_key: &m.public_key,
             signature: &m.signature,
+            owner_token_hash: None,
         },
     )
     .await?;
