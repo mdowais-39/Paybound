@@ -272,7 +272,14 @@ Returns `200` (handled/ignored), `401` (bad signature), `400` (bad JSON), `500` 
 
 The agent's channel. The frontend generally does **not** call `/mcp` directly (that's the agent's job) but **does** use the discovery + read endpoints.
 
-**Real, multi-merchant catalog.** The demo catalog now spans **two distinct, non-overlapping merchants** built from real ABO product data — "Paybound Demo Store" (general, ~1000 items) and "Stone & Beam Living" (furniture specialty, ~300 items, real ABO brands "Stone & Beam"/"Rivet"). A mandate's `allowed_merchants` (§4A `POST /mandates`) already supports scoping to either one; pass `merchant_id` to target the specialty store. `GET /catalog/categories?merchant_id=` returns the right list for whichever merchant is selected.
+**Real, multi-merchant catalog.** The demo catalog spans **five distinct, non-overlapping merchants** (~2,950 items), built from two genuinely different real datasets — not one dataset re-skinned:
+- **Paybound Demo Store** (general, ~1000 items) — ABO, all brands except the specialty ones below
+- **Stone & Beam Living** (furniture, ~300 items) — real ABO brands "Stone & Beam"/"Rivet"
+- **AmazonBasics Essentials** (electronics/utility, ~400 items) — real ABO brand "AmazonBasics"
+- **Amazon Collection Jewelers** (fine jewelry, ~250 items) — real ABO brand "Amazon Collection"
+- **Paybound Fresh Grocery** (grocery, ~1000 items) — a **separate dataset** (Instacart Market Basket: real product names + real aisle/department taxonomy)
+
+Prices are synthesized (both datasets ship no prices), deterministic per item, disclosed openly — same honesty pattern as the rest of the project. The premium categories (sofa, television, chair, watch, ring, earring, necklace) are priced to realistically span the ₹15,000 AFA threshold — **272 items now naturally exceed it**, so the kernel's `requires_human_afa` gate (§ below) can be demoed with an organic purchase request ("buy a gold diamond ring") rather than an artificially rigged mandate. A mandate's `allowed_merchants` (§4A `POST /mandates`) supports scoping to any one of the five; pass `merchant_id`. `GET /catalog/categories?merchant_id=` returns the right list for whichever merchant is selected.
 
 **Search retrieval.** `search_catalog` matches if **any** query term is present (not all of them), so a phrase like "study table" still finds real matches (e.g. "...Side Table") even though no title literally contains the word "study" — the trained relevance ranker (MiniLM + XGBoost) then reranks that pool for true relevance. It's still literal-term matching, not full semantic embedding search (the schema has an unused `vector(384)` column reserved for that as a future upgrade) — so an extremely oblique phrasing can still occasionally miss, but the common "one word doesn't match verbatim" case that used to zero out results is fixed.
 

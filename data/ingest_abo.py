@@ -27,6 +27,7 @@ import gzip
 import json
 import os
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -40,40 +41,89 @@ RAW_DIR = Path(__file__).parent / "raw"
 MERCHANT_NAME = "Paybound Demo Store"
 
 # Synthesized ₹ price ranges (in rupees) keyed by a normalized category. Whole
-# rupees; converted to paise on insert (money is always integer paise).
+# rupees; converted to paise on insert (money is always integer paise). The
+# premium categories below (sofa, television, chair, ring, ...) are set to
+# realistically span the ₹15,000 AFA threshold — the earlier ranges topped
+# out at ~₹15k for even the priciest item, so a mandate could almost never
+# naturally trigger the AFA "needs human" gate the kernel actually enforces.
 PRICE_RANGES = {
+    # Everyday / mass-market — kept modest on purpose.
     "shoes": (1200, 6000),
     "sandal": (600, 2500),
-    "boot": (2000, 8000),
+    "boot": (2000, 9000),
     "shirt": (500, 2500),
-    "dress": (900, 4000),
+    "dress": (900, 4500),
     "pants": (700, 3500),
-    "watch": (1500, 20000),
-    "backpack": (800, 4500),
-    "sunglasses": (900, 6000),
-    "headphones": (1000, 15000),
-    "speaker": (1500, 12000),
-    "chair": (2500, 15000),
-    "lamp": (600, 4000),
+    "backpack": (800, 5000),
+    "sunglasses": (900, 7000),
+    "lamp": (600, 5000),
     "bottle": (300, 1500),
-    "bag": (700, 4000),
+    "bag": (700, 6000),
     "cable": (200, 1200),
     "cover": (300, 2000),
-    "toy": (400, 3000),
+    "toy": (400, 3500),
+    "electronics accessory": (300, 3000),
+    "tools & safety supplies": (400, 3500),
+    "drugstore & baby care": (200, 2000),
+    "rug": (1000, 18000),
+    # Genuinely premium categories — real Indian retail prices, not inflated
+    # for the demo; several of these naturally clear ₹15,000.
+    "watch": (1500, 45000),
+    "headphones": (1000, 25000),
+    "speaker": (1500, 20000),
+    "chair": (2500, 30000),
+    "sofa": (8000, 60000),
+    "television": (8000, 80000),
+    "table": (2000, 25000),
+    "desk": (2500, 20000),
+    "cabinet": (3000, 25000),
+    "vacuum cleaner": (1500, 30000),
+    "microscope": (5000, 45000),
+    "ring": (3000, 90000),
+    "earring": (2000, 60000),
+    "necklace": (4000, 100000),
+    "fine jewelry": (3000, 80000),
 }
 DEFAULT_RANGE = (500, 5000)
 
+# Explicit fixes for ABO's raw, unreadable taxonomy codes. Verified against
+# real sample titles (Part F honesty: these aren't guesses) — e.g. "finering"
+# is fine jewelry rings (gold/silver/diamond), "biss" is tools/safety gear
+# (extension leads, work gloves, ear protection). Applied only as a fallback,
+# since these codes are single unbroken tokens with no clean word-boundary
+# substring match against any PRICE_RANGES key (see normalize_category).
+CATEGORY_ALIASES = {
+    "biss": "tools & safety supplies",
+    "finering": "ring",
+    "fineearring": "earring",
+    "finenecklacebraceletanklet": "necklace",
+    "fineother": "fine jewelry",
+    "fashionring": "ring",  # sampled: also real gold/diamond-accent pieces, not costume jewelry
+    "fashionearring": "earring",
+    "fashionnecklacebraceletanklet": "necklace",
+    "abis drugstore": "drugstore & baby care",
+    "accessory or part or supply": "electronics accessory",
+}
+
 
 def normalize_category(product_type: str) -> str:
-    """Map an ABO product_type to a coarse, shopper-friendly category."""
-    pt = product_type.lower()
+    """Map an ABO product_type to a coarse, shopper-friendly category.
+
+    Matches on a LEFT word-boundary, not a bare substring: a naive `"table"
+    in pt` check would wrongly match inside "vegetable" (which literally ends
+    in "...table"). `\\b` before the key prevents that whole class of bug
+    while still catching plurals ("shoe" boundary-matches "shoes" too, since
+    only the left edge needs to be a real word start).
+    """
+    pt = product_type.lower().replace("_", " ")
     for key in PRICE_RANGES:
-        if key in pt:
+        if re.search(r"\b" + re.escape(key), pt):
             return key
     # Common ABO product_type values → friendlier buckets.
     if "shoe" in pt:
         return "shoes"
-    return pt.replace("_", " ").strip() or "misc"
+    raw = pt.strip() or "misc"
+    return CATEGORY_ALIASES.get(raw, raw)
 
 
 def english_value(field: list | None) -> str | None:
