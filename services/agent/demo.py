@@ -54,6 +54,11 @@ def main() -> int:
         print(f"PAY LINK: {result.payment_link}")
     if result.clarification_question:
         print(f"ASK     : {result.clarification_question}")
+    if result.options:
+        print("OPTIONS :")
+        for o in result.options:
+            print(f"  - {o['item_id']}  {o['title']}  Rs{o['price_paise']/100:.2f}  ({o['category']})")
+        print("          resume with: POST /sessions/{id}/select {\"item_id\": \"...\"}")
     print(f"\nLLM calls made: {orch.llm.calls}")
     flush()  # export spans before exit
     return 0

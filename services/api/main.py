@@ -82,6 +82,10 @@ class ApproveRequest(BaseModel):
     cart_id: str
 
 
+class SelectRequest(BaseModel):
+    item_id: str
+
+
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -119,6 +123,7 @@ def _result_json(orch: Orchestrator, result, trace_id: str | None) -> dict:
         "payment_link": result.payment_link,
         "clarification_question": result.clarification_question,
         "cart_id": result.cart_id,
+        "options": result.options,
         "trace_id": trace_id,
         "llm_calls": orch.llm.calls,
     }
@@ -150,6 +155,31 @@ def run_session(session_id: str, req: RunRequest, authorization: str | None = He
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("agent run failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return _result_json(orch, result, trace_id)
+
+
+@app.post("/sessions/{session_id}/select")
+def select_option(session_id: str, req: SelectRequest, authorization: str | None = Header(None)) -> dict:
+    """Resume a CHOOSE session after the human picked one of the offered
+    items (POST /sessions/{id}/run returned state=CHOOSE with an `options`
+    list). No LLM call — a human naming the exact item is resolved
+    deterministically, not re-interpreted."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
+    orch = _orchestrator()
+    tracer = _state["tracer"]
+    trace_id = None
+    try:
+        with tracer.start_as_current_span("select") as span:
+            span.set_attribute("session_id", session_id)
+            span.set_attribute("item_id", req.item_id)
+            result = orch.select(session_id, req.item_id)
+            trace_id = format(span.get_span_context().trace_id, "032x")
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("agent select failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
     return _result_json(orch, result, trace_id)
 

@@ -29,20 +29,28 @@ class FakeLLM:
 class FakeMcp:
     """Canned tool responses; records the tools called."""
 
-    def __init__(self, checkout_result: dict):
+    def __init__(self, checkout_result: dict, search_items: list[dict] | None = None):
         self.checkout_result = checkout_result
         self.calls: list[str] = []
+        self.search_items = search_items or [
+            {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+             "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
+        ]
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         self.calls.append(name)
         if name == "search_catalog":
-            return {"items": [
-                {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
-                 "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
-            ]}
+            return {"items": self.search_items}
+        if name == "get_availability":
+            for it in self.search_items:
+                if it["item_id"] == arguments["item_id"]:
+                    return {**it, "available": True}
+            raise RuntimeError(f"tool 'get_availability' failed: item {arguments['item_id']} not found")
         if name == "create_cart":
-            return {"cart_id": "cart-1", "total_paise": 285000,
-                    "line_items": [{"item_id": "11111111-1111-1111-1111-111111111111", "qty": 1}]}
+            item_id = arguments["items"][0]["item_id"]
+            price = next((it["price_paise"] for it in self.search_items if it["item_id"] == item_id), 285000)
+            return {"cart_id": "cart-1", "total_paise": price,
+                    "line_items": [{"item_id": item_id, "qty": 1}]}
         if name == "checkout":
             # honour the AFA-approval resume path if the fake was set up for it
             if callable(self.checkout_result):
@@ -161,6 +169,73 @@ class FakeConfidence:
 
     def score_purchase(self, feat: dict) -> float:
         return self.value
+
+
+MULTI = [
+    {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+     "title": "Trail Runner", "category": "footwear", "price_paise": 285000},
+    {"item_id": "22222222-2222-2222-2222-222222222222", "merchant_id": "m",
+     "title": "Road Racer", "category": "footwear", "price_paise": 210000},
+    {"item_id": "33333333-3333-3333-3333-333333333333", "merchant_id": "m",
+     "title": "Trail Elite", "category": "footwear", "price_paise": 295000},
+]
+
+
+def test_multiple_candidates_offered_not_auto_picked():
+    # The agent must not silently guess a brand/price preference among
+    # several genuinely distinct, in-bounds matches — it offers them.
+    mcp = FakeMcp({"verdict": "approved"}, search_items=MULTI)
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))
+    intent = Intent(query="running shoes", category="footwear")
+
+    result = orch.run("s1", "buy running shoes", parsed_intent=intent)
+
+    assert result.state == "CHOOSE"
+    assert result.options is not None
+    assert len(result.options) == 3
+    assert {o["item_id"] for o in result.options} == {i["item_id"] for i in MULTI}
+    assert "create_cart" not in mcp.calls  # never auto-composed a cart
+    assert "checkout" not in mcp.calls
+
+
+def test_select_composes_and_checks_out_the_chosen_item():
+    mcp = FakeMcp(
+        {"verdict": "approved", "payment_link": "https://rzp.io/picked"},
+        search_items=MULTI,
+    )
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))
+
+    result = orch.select("s1", "22222222-2222-2222-2222-222222222222")
+
+    assert result.state == "AUTHORIZED"
+    assert result.payment_link == "https://rzp.io/picked"
+    assert mcp.calls == ["get_availability", "create_cart", "checkout"]
+
+
+def test_select_rejects_item_outside_allowed_category():
+    off_category = [{"item_id": "44444444-4444-4444-4444-444444444444", "merchant_id": "m",
+                      "title": "Espresso Machine", "category": "kitchen", "price_paise": 400000}]
+    mcp = FakeMcp({"verdict": "approved"}, search_items=off_category)
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))  # mandate only allows "footwear"
+
+    result = orch.select("s1", "44444444-4444-4444-4444-444444444444")
+
+    assert result.state == "REFUSED"
+    assert result.rule_cited == "category_not_allowed"
+    assert "checkout" not in mcp.calls
+
+
+def test_select_rejects_item_outside_allowed_merchant():
+    off_merchant = [{"item_id": "55555555-5555-5555-5555-555555555555", "merchant_id": "not-m",
+                      "title": "Trail Runner (other store)", "category": "footwear", "price_paise": 285000}]
+    mcp = FakeMcp({"verdict": "approved"}, search_items=off_merchant)
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))  # mandate only allows merchant "m"
+
+    result = orch.select("s1", "55555555-5555-5555-5555-555555555555")
+
+    assert result.state == "REFUSED"
+    assert result.rule_cited == "merchant_not_allowed"
+    assert "checkout" not in mcp.calls
 
 
 def test_low_confidence_routes_to_needs_human_citing_the_scorer():

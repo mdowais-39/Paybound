@@ -40,10 +40,15 @@ class ComposedCart:
 class OrchestratorResult:
     """The outcome of running one purchase session."""
 
-    state: str  # COMPLETED | REFUSED | NEEDS_HUMAN | CLARIFY | PRE_CHECK_FAILED | AUTHORIZED
+    state: str  # COMPLETED | REFUSED | NEEDS_HUMAN | CLARIFY | CHOOSE | PRE_CHECK_FAILED | AUTHORIZED
     message: str
     verdict: str | None = None
     rule_cited: str | None = None
     payment_link: str | None = None
     clarification_question: str | None = None
     cart_id: str | None = None
+    #: Present only in state=CHOOSE — the candidates a human must pick between
+    #: (the agent found more than one plausible match and refuses to guess
+    #: which one the human actually wants). Each is {item_id, title, category,
+    #: price_paise, merchant_id}. Resolve with POST /sessions/{id}/select.
+    options: list[dict] | None = None

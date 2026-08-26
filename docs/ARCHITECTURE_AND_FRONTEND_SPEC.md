@@ -305,7 +305,7 @@ Methods: `initialize`, `tools/list`, `tools/call`. Example:
 
 ### 4C. Agent API (Python, FastAPI) — `http://localhost:8092`
 
-A thin HTTP shell around the existing `Orchestrator` — no new business logic, just an HTTP handle onto it. Models/LLM/MCP client are built once at process startup, not per request. Both endpoints below require `Authorization: Bearer <token>` — **the same token minted by the gateway's `POST /identity`** (§4A); this service checks the same `identity` table and the same per-session ownership rule.
+A thin HTTP shell around the existing `Orchestrator` — no new business logic, just an HTTP handle onto it. Models/LLM/MCP client are built once at process startup, not per request. Every endpoint below requires `Authorization: Bearer <token>` — **the same token minted by the gateway's `POST /identity`** (§4A); this service checks the same `identity` table and the same per-session ownership rule.
 
 #### `POST /sessions/{session_id}/run` 🔒
 Run the agent on one natural-language goal, against a session created by `POST /mandates` (§4A). Safe to call repeatedly on the same session for a new goal each time.
@@ -317,12 +317,36 @@ Run the agent on one natural-language goal, against a session created by `POST /
   "state": "AUTHORIZED", "message": "Approved. Complete payment: https://rzp.io/rzp/…",
   "verdict": "approved", "rule_cited": null,
   "payment_link": "https://rzp.io/rzp/…", "clarification_question": null,
-  "cart_id": "46cc34ed-…",
+  "cart_id": "46cc34ed-…", "options": null,
   "trace_id": "6c3693abc207316a62753e3b8b0635d8",   // distributed-trace id
   "llm_calls": 1                                     // honesty signal: pre-checks ran before this
 }
 // 401 missing/invalid token; 403 if the session belongs to a different identity;
 // 404 if the session doesn't exist; 500 on an unexpected error
+```
+
+**`state: "CHOOSE"`** — when the search finds **more than one** plausible, in-bounds match, the agent does not silently buy the top-ranked one. It stops and returns the candidates as structured data (not a chat question) so the frontend can render a picker:
+```json
+{
+  "state": "CHOOSE",
+  "message": "I found 3 options — which would you like?",
+  "options": [
+    { "item_id": "6540ef88-…", "title": "AmazonBasics Lightweight On-Ear Headphones - Black", "category": "headphones", "price_paise": 642800, "merchant_id": "3621fef3-…" },
+    { "item_id": "88b85481-…", "title": "Amazonbasics On-Ear Wireless Bluetooth Headphones - Champagne", "category": "headphones", "price_paise": 951900, "merchant_id": "3621fef3-…" },
+    { "item_id": "733440c9-…", "title": "AmazonBasics Gaming Headset for Xbox One, PS4", "category": "headphones", "price_paise": 687900, "merchant_id": "3621fef3-…" }
+  ]
+}
+```
+Resolve it with `POST /sessions/{id}/select`, not by re-running `/run` with a follow-up sentence — that would re-parse from scratch with no memory of what was offered.
+
+#### `POST /sessions/{session_id}/select` 🔒
+Resume a `CHOOSE` session after the human picked one of the offered items. **No LLM call** — a human naming the exact item is resolved deterministically (validated against the mandate's `allowed_categories`/`allowed_merchants` before a cart is even built), not re-interpreted by a model.
+```json
+// request
+{ "item_id": "88b85481-6524-46c8-b8db-b75f56a2a143" }
+// 200 OK — same OrchestratorResult shape as /run (llm_calls is 0)
+// or, if the item somehow isn't actually in-bounds:
+{ "state": "REFUSED", "rule_cited": "category_not_allowed", "message": "'…' is outside the categories this mandate allows.", ... }
 ```
 
 #### `POST /sessions/{session_id}/approve` 🔒
@@ -472,15 +496,16 @@ The product has **three surfaces**, matching the three things a customer needs: 
 **Must show / do:**
 - **Chat-style input:** the customer types a goal ("buy running shoes under 3000"). Fires the agent run (see §7 endpoint).
 - **Live pipeline visualization:** show the stages lighting up — Pre-checks ✓ → Parsing → Searching → Composing cart → **Kernel gate** → outcome. This makes the "agent proposes, kernel disposes" story *visible*. Even a simple stepper is high-impact.
-- **Four distinct outcome cards**, driven by `OrchestratorResult.state`:
+- **Five distinct outcome cards**, driven by `OrchestratorResult.state`:
   - `AUTHORIZED` / `COMPLETED` → green success card: the cart, the amount, and the **real payment link** (button to open `rzp.io/...`; note "pay with UPI `success@razorpay` in test mode").
   - `REFUSED` → amber card: the `human_message` and a chip showing the `rule_cited` (e.g. `over_per_txn_cap`). **Never** a raw error — this is the graceful-failure showcase.
   - `NEEDS_HUMAN` → blue card: "This needs your approval" + an **Approve** button (for the >₹15,000 / low-confidence path) and a Decline. Approve resumes the durable workflow.
   - `CLARIFY` → the agent's follow-up question rendered as a chat bubble; the customer can answer and continue.
+  - `CHOOSE` → **not a chat bubble** — a real picker (cards/list) built from `options[]` (title, price, category). The agent found several genuinely different in-bounds matches and refuses to guess brand/price/style on the customer's behalf. Selecting one calls `POST /sessions/{id}/select` with that `item_id`, never a re-typed sentence — resending free text would re-run the whole parse with no memory of what was shown.
 - **Trace link:** show the `trace_id` and (optionally) deep-link to Grafana/Tempo — proves the whole path is observable.
-- **LLM-call counter:** display `LLM calls made: N` — a subtle but powerful honesty signal (shows pre-checks run *before* the LLM).
+- **LLM-call counter:** display `LLM calls made: N` — a subtle but powerful honesty signal (shows pre-checks run *before* the LLM, and that `/select`/`/approve` need zero LLM calls at all).
 
-**Key components:** `GoalInput`, `PipelineStepper`, `OutcomeCard` (4 variants), `PaymentLinkButton`, `ClarifyBubble`, `ApprovalPrompt`, `TraceBadge`.
+**Key components:** `GoalInput`, `PipelineStepper`, `OutcomeCard` (5 variants), `PaymentLinkButton`, `ClarifyBubble`, `ChoicePicker`, `ApprovalPrompt`, `TraceBadge`.
 
 ### Page 3 — Audit Trail Viewer `/audit/{session_id}`
 *Where anyone can verify exactly what happened and why.* This is what a Razorpay reviewer will linger on.
@@ -523,7 +548,8 @@ The product has **three surfaces**, matching the three things a customer needs: 
 | `GET /sessions/{id}/audit` 🔒 | gateway :8080 | The hash-chained, narrated audit trail |
 | `POST /mandates/{id}/revoke` 🔒 | gateway :8080 | Instant kill-switch |
 | `GET /catalog/categories` | gateway :8080 | Category list for the mandate form (public) |
-| `POST /sessions/{id}/run` 🔒 | agent API :8092 | Run the agent on one goal |
+| `POST /sessions/{id}/run` 🔒 | agent API :8092 | Run the agent on one goal (may return `CHOOSE` + `options`) |
+| `POST /sessions/{id}/select` 🔒 | agent API :8092 | Resume a CHOOSE session with the human's picked item |
 | `POST /sessions/{id}/approve` 🔒 | agent API :8092 | Resume a NEEDS_HUMAN session |
 
 🔒 = requires `Authorization: Bearer <token>` and only permits the owning identity — see §4A "Identity & ownership".

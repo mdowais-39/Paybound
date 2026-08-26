@@ -45,6 +45,12 @@ pub struct AvailabilityView {
     pub item_id: Uuid,
     pub available: bool,
     pub price_paise: Paise,
+    /// Present so a caller can validate a chosen item against a mandate's
+    /// allowed_categories/allowed_merchants without a second lookup (used by
+    /// the agent's product-choice flow — see Orchestrator.select).
+    pub title: String,
+    pub category: String,
+    pub merchant_id: Uuid,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,7 +155,8 @@ impl Storefront {
     /// Live availability + price for one item.
     pub async fn get_availability(&self, item_id: Uuid) -> Result<AvailabilityView, AppError> {
         let r = sqlx::query!(
-            "SELECT availability, price_paise FROM catalog_item WHERE item_id = $1",
+            "SELECT availability, price_paise, title, category, merchant_id
+             FROM catalog_item WHERE item_id = $1",
             item_id
         )
         .fetch_optional(&self.pool)
@@ -160,6 +167,9 @@ impl Storefront {
             item_id,
             available: r.availability,
             price_paise: r.price_paise,
+            title: r.title,
+            category: r.category,
+            merchant_id: r.merchant_id,
         })
     }
 

@@ -15,7 +15,7 @@ import logging
 from .base_agent import BaseAgent
 from .db import Db
 from .llm import LLM
-from .models import Intent, OrchestratorResult
+from .models import Candidate, Intent, OrchestratorResult
 from .precheck import run_prechecks
 from .workers.cart_composer import CartComposer
 from .workers.clarification import ClarificationWorker
@@ -24,6 +24,10 @@ from .workers.discovery import DiscoveryWorker
 logger = logging.getLogger("paybound.agent")
 
 CONFIDENCE_THRESHOLD = 0.5
+#: How many candidates to offer a human when more than one plausible match
+#: exists. The agent does not get to guess a customer's brand/colour/price
+#: preference among genuinely distinct options — it proposes, the human picks.
+MAX_OPTIONS = 5
 
 _PARSE_SYSTEM = """You parse a shopping request into JSON for a bounded buying agent.
 Return ONLY a JSON object with these fields:
@@ -98,16 +102,85 @@ class Orchestrator(BaseAgent):
             q = "I couldn't find items matching that within your limits — want to adjust the budget or category?"
             return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
 
-        # 5. Compose the cart (+ upsell + confidence), bounded to allowed categories.
+        # 5. More than one plausible match → the agent does not get to guess
+        # which brand/price/style the human actually wants. Offer them, don't
+        # silently buy the top-ranked one.
+        if len(candidates) > 1:
+            options = candidates[:MAX_OPTIONS]
+            return OrchestratorResult(
+                state="CHOOSE",
+                message=f"I found {len(options)} options — which would you like?",
+                options=[
+                    {
+                        "item_id": c.item_id,
+                        "title": c.title,
+                        "category": c.category,
+                        "price_paise": c.price_paise,
+                        "merchant_id": c.merchant_id,
+                    }
+                    for c in options
+                ],
+            )
+
+        # 6. Exactly one match — compose and gate it.
+        return self._compose_and_checkout(session_id, candidates[0], intent, mandate)
+
+    def select(self, session_id: str, item_id: str) -> OrchestratorResult:
+        """Resume a CHOOSE session after the human picked a specific item
+        (POST /sessions/{id}/select). Re-validates the item against the
+        mandate's own bounds (category/merchant) here, rather than trusting
+        that it was one of the options actually shown — the kernel still
+        re-checks price/budget/cap at checkout either way, but this catches a
+        mismatched pick before ever building a cart. No LLM call: a human
+        explicitly naming the exact item is a stronger signal than any
+        confidence score, so it skips that gate too."""
+        mandate = self.db.get_mandate_for_session(session_id)
+        item = self.call_tool("get_availability", {"item_id": item_id})
+
+        allowed_categories = mandate.get("allowed_categories") or []
+        allowed_merchants = mandate.get("allowed_merchants") or []
+        if allowed_categories and item["category"] not in allowed_categories:
+            return OrchestratorResult(
+                state="REFUSED",
+                message=f"'{item['title']}' is outside the categories this mandate allows.",
+                rule_cited="category_not_allowed",
+            )
+        if allowed_merchants and item["merchant_id"] not in allowed_merchants:
+            return OrchestratorResult(
+                state="REFUSED",
+                message=f"'{item['title']}' is from a merchant this mandate doesn't allow.",
+                rule_cited="merchant_not_allowed",
+            )
+
+        candidate = Candidate(
+            item_id=item["item_id"],
+            title=item["title"],
+            category=item["category"],
+            price_paise=item["price_paise"],
+            merchant_id=item["merchant_id"],
+        )
+        intent = Intent(query=item["title"], category=item["category"])
+        return self._compose_and_checkout(session_id, candidate, intent, mandate, skip_confidence_gate=True)
+
+    def _compose_and_checkout(
+        self,
+        session_id: str,
+        candidate: Candidate,
+        intent: Intent,
+        mandate: dict,
+        skip_confidence_gate: bool = False,
+    ) -> OrchestratorResult:
+        # Compose the cart (+ upsell + confidence), bounded to allowed categories.
         cart = self.cart_composer.compose(
             session_id,
-            candidates[0],
+            candidate,
             intent,
             allowed_categories=mandate.get("allowed_categories"),
         )
 
-        # 6. Low confidence → route to human (same first-class path as AFA).
-        if cart.confidence < CONFIDENCE_THRESHOLD:
+        # Low confidence → route to human (same first-class path as AFA) —
+        # skipped when a human already explicitly picked this exact item.
+        if not skip_confidence_gate and cart.confidence < CONFIDENCE_THRESHOLD:
             return OrchestratorResult(
                 state="NEEDS_HUMAN",
                 message="I'm not confident this matches your intent — please confirm.",
@@ -115,7 +188,7 @@ class Orchestrator(BaseAgent):
                 cart_id=cart.cart_id,
             )
 
-        # 7. Gate: the orchestrator (only) submits the cart to the kernel.
+        # Gate: the orchestrator (only) submits the cart to the kernel.
         return self._checkout(session_id, cart.cart_id, afa_approved=False)
 
     def approve(self, session_id: str, cart_id: str) -> OrchestratorResult:
