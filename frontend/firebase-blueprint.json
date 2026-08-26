@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profiles",
+      "description": "Registered user accounts with role, email, display name, and creation time.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "mandates": {
+      "title": "Mandates",
+      "description": "Deterministic shopping authorization mandates assigned to users.",
+      "type": "object",
+      "properties": {
+        "mandate_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "userId": { "type": "string" },
+        "payer": { "type": "string" },
+        "budget_total_paise": { "type": "number" },
+        "per_txn_cap_paise": { "type": "number" },
+        "running_spend_paise": { "type": "number" },
+        "allowed_categories": { "type": "array", "items": { "type": "string" } },
+        "allowed_merchants": { "type": "array", "items": { "type": "string" } },
+        "ttl_unix": { "type": "number" },
+        "nl_goal": { "type": "string" },
+        "revoked": { "type": "boolean" },
+        "session_state": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["mandate_id", "session_id", "userId", "budget_total_paise", "per_txn_cap_paise"]
+    },
+    "audit_chains": {
+      "title": "Audit Chains",
+      "description": "Cryptographic SHA-256 audit ledger sequences for delegated agent sessions.",
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "userId": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "entry_count": { "type": "number" },
+        "entries": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["session_id", "userId", "entries"]
+    }
+  }
+}

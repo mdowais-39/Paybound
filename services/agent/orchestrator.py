@@ -11,6 +11,7 @@ applied twice."""
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from .base_agent import BaseAgent
 from .db import Db
@@ -28,6 +29,18 @@ CONFIDENCE_THRESHOLD = 0.5
 #: exists. The agent does not get to guess a customer's brand/colour/price
 #: preference among genuinely distinct options — it proposes, the human picks.
 MAX_OPTIONS = 5
+
+#: A stage-progress sink. Called with (stage_id, status) as each REAL pipeline
+#: step starts and finishes, so the SSE endpoint can stream genuine progress
+#: (not a timed animation). stage_id ∈ pre_checks|parsing|searching|composing|
+#: kernel_gate|outcome; status ∈ active|success|refused|needs_human.
+StageCallback = Callable[[str, str], None]
+
+
+def _stage_emitter(on_stage: StageCallback | None) -> StageCallback:
+    if on_stage is None:
+        return lambda _id, _status: None
+    return on_stage
 
 _PARSE_SYSTEM = """You parse a shopping request into JSON for a bounded buying agent.
 Return ONLY a JSON object with these fields:
@@ -72,20 +85,31 @@ class Orchestrator(BaseAgent):
         session_id: str,
         goal: str,
         parsed_intent: Intent | None = None,
+        on_stage: StageCallback | None = None,
     ) -> OrchestratorResult:
+        # `emit` streams genuine pipeline-stage events to the caller (the SSE
+        # endpoint) as each real step starts/finishes. Defaults to a no-op, so
+        # the plain /run path and the tests are unaffected.
+        emit = _stage_emitter(on_stage)
+
         # 1. Pre-hand checks — deterministic, BEFORE any LLM call.
+        emit("pre_checks", "active")
         mandate = self.db.get_mandate_for_session(session_id)
         pre = run_prechecks(mandate, goal, self.request_count)
         if not pre.ok:
             logger.info("pre_check_failed", extra={"reason": pre.reason})
+            emit("pre_checks", "refused")
             return OrchestratorResult(
                 state="PRE_CHECK_FAILED",
                 message=f"Request rejected before reasoning: {pre.reason}.",
                 rule_cited=pre.reason,
             )
+        emit("pre_checks", "success")
 
         # 2. Parse the goal (the first LLM call). Tests may inject the intent.
+        emit("parsing", "active")
         intent = parsed_intent if parsed_intent is not None else self._parse_intent(goal, mandate)
+        emit("parsing", "success")
 
         # 3. Ambiguous → ask, don't guess.
         if intent.ambiguous:
@@ -93,14 +117,17 @@ class Orchestrator(BaseAgent):
             return OrchestratorResult(state="CLARIFY", message=question, clarification_question=question)
 
         # 4. Shop — bounded to the mandate's allowed category + merchant.
+        emit("searching", "active")
         candidates = self.discovery.search(
             intent,
             allowed_categories=mandate.get("allowed_categories"),
             allowed_merchants=mandate.get("allowed_merchants"),
         )
         if not candidates:
+            emit("searching", "success")
             q = "I couldn't find items matching that within your limits — want to adjust the budget or category?"
             return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
+        emit("searching", "success")
 
         # 5. More than one plausible match → the agent does not get to guess
         # which brand/price/style the human actually wants. Offer them, don't
@@ -123,9 +150,11 @@ class Orchestrator(BaseAgent):
             )
 
         # 6. Exactly one match — compose and gate it.
-        return self._compose_and_checkout(session_id, candidates[0], intent, mandate)
+        return self._compose_and_checkout(session_id, candidates[0], intent, mandate, on_stage=on_stage)
 
-    def select(self, session_id: str, item_id: str) -> OrchestratorResult:
+    def select(
+        self, session_id: str, item_id: str, on_stage: StageCallback | None = None
+    ) -> OrchestratorResult:
         """Resume a CHOOSE session after the human picked a specific item
         (POST /sessions/{id}/select). Re-validates the item against the
         mandate's own bounds (category/merchant) here, rather than trusting
@@ -134,18 +163,25 @@ class Orchestrator(BaseAgent):
         mismatched pick before ever building a cart. No LLM call: a human
         explicitly naming the exact item is a stronger signal than any
         confidence score, so it skips that gate too."""
+        emit = _stage_emitter(on_stage)
+        # The human already did the searching/choosing, so those stages are
+        # done the moment we resume.
+        for done in ("pre_checks", "parsing", "searching"):
+            emit(done, "success")
         mandate = self.db.get_mandate_for_session(session_id)
         item = self.call_tool("get_availability", {"item_id": item_id})
 
         allowed_categories = mandate.get("allowed_categories") or []
         allowed_merchants = mandate.get("allowed_merchants") or []
         if allowed_categories and item["category"] not in allowed_categories:
+            emit("kernel_gate", "refused")
             return OrchestratorResult(
                 state="REFUSED",
                 message=f"'{item['title']}' is outside the categories this mandate allows.",
                 rule_cited="category_not_allowed",
             )
         if allowed_merchants and item["merchant_id"] not in allowed_merchants:
+            emit("kernel_gate", "refused")
             return OrchestratorResult(
                 state="REFUSED",
                 message=f"'{item['title']}' is from a merchant this mandate doesn't allow.",
@@ -160,7 +196,9 @@ class Orchestrator(BaseAgent):
             merchant_id=item["merchant_id"],
         )
         intent = Intent(query=item["title"], category=item["category"])
-        return self._compose_and_checkout(session_id, candidate, intent, mandate, skip_confidence_gate=True)
+        return self._compose_and_checkout(
+            session_id, candidate, intent, mandate, skip_confidence_gate=True, on_stage=on_stage
+        )
 
     def _compose_and_checkout(
         self,
@@ -169,40 +207,73 @@ class Orchestrator(BaseAgent):
         intent: Intent,
         mandate: dict,
         skip_confidence_gate: bool = False,
+        on_stage: StageCallback | None = None,
     ) -> OrchestratorResult:
+        emit = _stage_emitter(on_stage)
         # Compose the cart (+ upsell + confidence), bounded to allowed categories.
+        emit("composing", "active")
         cart = self.cart_composer.compose(
             session_id,
             candidate,
             intent,
             allowed_categories=mandate.get("allowed_categories"),
         )
+        emit("composing", "success")
+
+        # A display cart (real titles/prices) attached to every outcome from
+        # here on, so the UI can show what was composed without fabricating.
+        cart_view = {
+            "cart_id": cart.cart_id,
+            "total_paise": cart.total_paise,
+            "line_items": cart.display_items,
+        }
 
         # Low confidence → route to human (same first-class path as AFA) —
         # skipped when a human already explicitly picked this exact item.
         if not skip_confidence_gate and cart.confidence < CONFIDENCE_THRESHOLD:
+            emit("kernel_gate", "needs_human")
             return OrchestratorResult(
                 state="NEEDS_HUMAN",
                 message="I'm not confident this matches your intent — please confirm.",
                 rule_cited="low_confidence",
                 cart_id=cart.cart_id,
+                amount_paise=cart.total_paise,
+                cart=cart_view,
             )
 
         # Gate: the orchestrator (only) submits the cart to the kernel.
-        return self._checkout(session_id, cart.cart_id, afa_approved=False)
+        result = self._checkout(session_id, cart.cart_id, afa_approved=False, on_stage=on_stage)
+        result.amount_paise = cart.total_paise
+        result.cart = cart_view
+        return result
 
-    def approve(self, session_id: str, cart_id: str) -> OrchestratorResult:
+    def approve(
+        self, session_id: str, cart_id: str, on_stage: StageCallback | None = None
+    ) -> OrchestratorResult:
         """Resume a NEEDS_HUMAN session after the human's PIN-equivalent approval
         (clears the ₹15,000 AFA gate; all other bounds still enforced)."""
-        return self._checkout(session_id, cart_id, afa_approved=True)
+        emit = _stage_emitter(on_stage)
+        for done in ("pre_checks", "parsing", "searching", "composing"):
+            emit(done, "success")
+        return self._checkout(session_id, cart_id, afa_approved=True, on_stage=on_stage)
 
-    def _checkout(self, session_id: str, cart_id: str, afa_approved: bool) -> OrchestratorResult:
+    def _checkout(
+        self,
+        session_id: str,
+        cart_id: str,
+        afa_approved: bool,
+        on_stage: StageCallback | None = None,
+    ) -> OrchestratorResult:
+        emit = _stage_emitter(on_stage)
+        emit("kernel_gate", "active")
         res = self.call_tool(
             "checkout",
             {"session_id": session_id, "cart_id": cart_id, "afa_approved": afa_approved},
         )
         verdict = res["verdict"]
         if verdict == "approved":
+            emit("kernel_gate", "success")
+            emit("outcome", "success")
             return OrchestratorResult(
                 state="AUTHORIZED",
                 message=f"Approved. Complete payment: {res.get('payment_link')}",
@@ -211,6 +282,7 @@ class Orchestrator(BaseAgent):
                 cart_id=cart_id,
             )
         if verdict == "needs_human":
+            emit("kernel_gate", "needs_human")
             return OrchestratorResult(
                 state="NEEDS_HUMAN",
                 message=res.get("human_message") or "This purchase needs your approval.",
@@ -218,6 +290,7 @@ class Orchestrator(BaseAgent):
                 rule_cited=res.get("rule_cited"),
                 cart_id=cart_id,
             )
+        emit("kernel_gate", "refused")
         return OrchestratorResult(
             state="REFUSED",
             message=res.get("human_message") or "This purchase was declined.",

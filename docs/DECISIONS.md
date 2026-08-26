@@ -113,3 +113,13 @@ choice, with a one-line reason. Newest at the bottom of each phase.
 - **Adversarial battery = a Rust bin over the pure kernel** (`harness --bin adversarial`), deterministic and DB-free, producing `docs/BOUNDS_HOLD.md` and exiting non-zero if any bound fails — so it doubles as a gate. **10/10 bounds hold** (baseline approve + all 9 refusal reasons).
 - **Four demo scenarios scripted deterministically** (happy+upsell, graceful refusal, live revocation, >₹15k human-approval pause), indexed in `eval/README.md`.
 - **Honest-metrics summary** (`docs/HONEST_METRICS.md`): real (payment links, webhooks, MCP tools, kernel, signed+hashed audit, AFA gate, durable workflow, the 3 ML models on real data) vs. simulated (Reserve-Pay ledger, ABO ₹ prices, synthetic-signed webhook in scripts), plus the distributed-trace limitation.
+
+## Frontend↔Backend integration pass (2026-08-27)
+
+Context: the frontend (Google AI Studio app) was built entirely separately against Firebase + its own Express mock backend; it made ZERO real-backend calls. See `docs/INTEGRATION_MAP.md` for the full Phase-0 audit. This pass replaces the frontend's data layer with real backend calls. User decisions:
+
+- **Repo hygiene:** the frontend was double-extracted (canonical `frontend/` + a byte-identical copy at the repo root). Deleted the top-level duplicate; `frontend/` is canonical.
+- **Source of truth = the real backend.** All mandate/session/audit data comes from the Rust/Python services. Firebase is kept for the human-facing login (Google/email) ONLY. Bridge: on Firebase login, mint a backend identity (`POST /identity`) once, store the bearer token, attach it to every backend call. Firestore is NO LONGER a parallel store for mandates/audit (that parallelism is what let fabrication creep in).
+- **Pipeline stepper = REAL streaming progress** (user chose the harder option over honest final-state coloring). Adds an SSE progress channel from the agent API so stages light up on genuine orchestrator events, not timers. This BUILD-BACKEND item is pulled earlier than Phase 4 because ShopPage's core wiring depends on it — logged deviation from the prompt's phase order.
+- **Landing interactive console:** honest-empty / clearly demo-labeled (no fabricated live stats), not cut.
+- **Mock layers being removed from the default path:** `frontend/server/routes/*` (the TS kernel reimplementation), the inline simulation in `frontend/src/lib/api.ts`, and `frontend/src/lib/mockData.ts` seeds. The frontend calls the real backend directly (absolute URLs + permissive CORS already on the backend).

@@ -1,0 +1,6 @@
+{
+  "name": "Paybound",
+  "description": "Agentic commerce trust & authorization layer with bounded spending mandates, deterministic kernel gating, and tamper-evident audit ledger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

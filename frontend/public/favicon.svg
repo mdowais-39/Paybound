@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141a2e" />
+      <stop offset="100%" stop-color="#0d111e" />
+    </linearGradient>
+
+    <!-- Top-Right Square Gradients -->
+    <linearGradient id="trTop" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#5b75ba" />
+      <stop offset="100%" stop-color="#465ea0" />
+    </linearGradient>
+    <linearGradient id="trLeft" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#556eb2" />
+      <stop offset="100%" stop-color="#3c528f" />
+    </linearGradient>
+    <linearGradient id="trRight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#283763" />
+      <stop offset="100%" stop-color="#1b2544" />
+    </linearGradient>
+    <linearGradient id="trBottom" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#223057" />
+      <stop offset="100%" stop-color="#18213e" />
+    </linearGradient>
+
+    <!-- Front Bottom-Left Square Gradients -->
+    <linearGradient id="blTop" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6985cb" />
+      <stop offset="100%" stop-color="#4e68ab" />
+    </linearGradient>
+    <linearGradient id="blLeft" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#637ec3" />
+      <stop offset="100%" stop-color="#445c99" />
+    </linearGradient>
+    <linearGradient id="blRight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2d3c69" />
+      <stop offset="100%" stop-color="#1d2747" />
+    </linearGradient>
+    <linearGradient id="blBottom" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#26345d" />
+      <stop offset="100%" stop-color="#1a233f" />
+    </linearGradient>
+
+    <!-- Drop Shadow Filter for Front Square -->
+    <filter id="squareShadow" x="-20%" y="-20%" width="150%" height="150%">
+      <feDropShadow dx="3" dy="4" stdDeviation="3" flood-color="#060912" flood-opacity="0.75" />
+    </filter>
+  </defs>
+
+  <!-- Base container with rounded corners -->
+  <rect width="100" height="100" rx="20" fill="url(#bgGrad)" />
+
+  <!-- 1. Top-Right Square (Back Layer) -->
+  <g id="top-right-square">
+    <!-- Outer Facets (Bevel) -->
+    <!-- Top Bar -->
+    <polygon points="27,14 80,14 69,25 38,25" fill="url(#trTop)" />
+    <!-- Left Bar -->
+    <polygon points="27,14 38,25 38,56 27,67" fill="url(#trLeft)" />
+    <!-- Right Bar -->
+    <polygon points="80,14 80,67 69,56 69,25" fill="url(#trRight)" />
+    <!-- Bottom Bar -->
+    <polygon points="27,67 80,67 69,56 38,56" fill="url(#trBottom)" />
+
+    <!-- Inner Cutout Surface (shows dark background) -->
+    <rect x="38" y="25" width="31" height="31" fill="#101524" />
+    
+    <!-- Inner Bevel Shadows -->
+    <polygon points="38,25 69,25 67,27 40,27" fill="#0b0e18" opacity="0.8" />
+    <polygon points="38,25 40,27 40,54 38,56" fill="#0c101b" opacity="0.8" />
+    <polygon points="69,25 69,56 67,54 67,27" fill="#3a4f85" opacity="0.5" />
+    <polygon points="38,56 69,56 67,54 40,54" fill="#36497d" opacity="0.5" />
+  </g>
+
+  <!-- 2. Bottom-Left Square (Front Layer with Drop Shadow) -->
+  <g id="bottom-left-square" filter="url(#squareShadow)">
+    <!-- Outer Facets (Bevel) -->
+    <!-- Top Bar -->
+    <polygon points="14,27 67,27 56,38 25,38" fill="url(#blTop)" />
+    <!-- Left Bar -->
+    <polygon points="14,27 25,38 25,69 14,80" fill="url(#blLeft)" />
+    <!-- Right Bar -->
+    <polygon points="67,27 67,80 56,69 56,38" fill="url(#blRight)" />
+    <!-- Bottom Bar -->
+    <polygon points="14,80 67,80 56,69 25,69" fill="url(#blBottom)" />
+
+    <!-- Inner Cutout Surface -->
+    <rect x="25" y="38" width="31" height="31" fill="#101524" />
+
+    <!-- Inner Bevel Shadows & Highlights -->
+    <polygon points="25,38 56,38 54,40 27,40" fill="#0b0e18" opacity="0.8" />
+    <polygon points="25,38 27,40 27,67 25,69" fill="#0c101b" opacity="0.8" />
+    <polygon points="56,38 56,69 54,67 54,40" fill="#445b96" opacity="0.5" />
+    <polygon points="25,69 56,69 54,67 27,67" fill="#3f558d" opacity="0.5" />
+  </g>
+</svg>

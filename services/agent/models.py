@@ -34,6 +34,10 @@ class ComposedCart:
     total_paise: int
     line_items: list[dict] = field(default_factory=list)
     confidence: float = 1.0
+    #: Human-readable line items for display (title + price + category), built
+    #: from the real catalog data the composer already had. Kept separate from
+    #: `line_items` (the signed cart envelope, which is intentionally minimal).
+    display_items: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -52,3 +56,8 @@ class OrchestratorResult:
     #: which one the human actually wants). Each is {item_id, title, category,
     #: price_paise, merchant_id}. Resolve with POST /sessions/{id}/select.
     options: list[dict] | None = None
+    #: The composed cart total in paise (when a cart was built), for display.
+    amount_paise: int | None = None
+    #: Human-readable cart line items for display (title/price/category), when
+    #: a cart was built. Sourced from the real catalog — not fabricated.
+    cart: dict | None = None

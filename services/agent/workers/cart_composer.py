@@ -28,6 +28,18 @@ class CartComposer(BaseAgent):
         clarification_turns: int = 0,
     ) -> ComposedCart:
         items = [{"item_id": chosen.item_id, "qty": 1}]
+        # Human-readable line items for display, built from data we already
+        # have (the chosen candidate + any complement from search) — real
+        # catalog values, never fabricated.
+        display_items = [
+            {
+                "item_id": chosen.item_id,
+                "title": chosen.title,
+                "qty": 1,
+                "price_paise": chosen.price_paise,
+                "category": chosen.category,
+            }
+        ]
 
         # Upsell: add ONE complement item, but only in a mandate-allowed category
         # (so the kernel still approves) and within budget.
@@ -35,6 +47,15 @@ class CartComposer(BaseAgent):
         complement = self._find_complement(chosen, allowed_categories, intent)
         if complement is not None:
             items.append({"item_id": complement["item_id"], "qty": 1})
+            display_items.append(
+                {
+                    "item_id": complement["item_id"],
+                    "title": complement.get("title", ""),
+                    "qty": 1,
+                    "price_paise": complement["price_paise"],
+                    "category": complement["category"],
+                }
+            )
             upsold = True
 
         cart = self.call_tool("create_cart", {"session_id": session_id, "items": items})
@@ -44,6 +65,7 @@ class CartComposer(BaseAgent):
             total_paise=cart["total_paise"],
             line_items=cart.get("line_items", []),
             confidence=confidence,
+            display_items=display_items,
         )
 
     def _find_complement(self, chosen: Candidate, allowed_categories, intent) -> dict | None:

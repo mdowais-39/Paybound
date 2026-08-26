@@ -13,12 +13,15 @@ Run: uvicorn services.api.main:app --port 8090
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import logging
 import os
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..agent.db import PgDb
@@ -124,14 +127,84 @@ def _result_json(orch: Orchestrator, result, trace_id: str | None) -> dict:
         "clarification_question": result.clarification_question,
         "cart_id": result.cart_id,
         "options": result.options,
+        "amount_paise": result.amount_paise,
+        "cart": result.cart,
         "trace_id": trace_id,
         "llm_calls": orch.llm.calls,
     }
 
 
+def _sse_response(session_id: str, span_name: str, work):
+    """Stream genuine pipeline-stage events over SSE while `work(orch, on_stage)`
+    runs the (blocking) orchestrator in a worker thread. Each real stage
+    start/finish is forwarded as `data: {"type":"stage",...}`; the terminal
+    OrchestratorResult arrives as `data: {"type":"result",...}`. Callers must
+    already have authenticated + checked ownership (so 401/403 return a normal
+    HTTP status, not a stream)."""
+    orch = _orchestrator()
+    tracer = _state["tracer"]
+
+    async def event_gen():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def on_stage(stage_id: str, status: str) -> None:
+            loop.call_soon_threadsafe(
+                queue.put_nowait, {"type": "stage", "id": stage_id, "status": status}
+            )
+
+        def run_work() -> None:
+            try:
+                with tracer.start_as_current_span(span_name) as span:
+                    span.set_attribute("session_id", session_id)
+                    result = work(orch, on_stage)
+                    trace_id = format(span.get_span_context().trace_id, "032x")
+                payload = {"type": "result", "result": _result_json(orch, result, trace_id)}
+            except LookupError as e:
+                payload = {"type": "error", "detail": str(e)}
+            except Exception as e:  # noqa: BLE001
+                logger.exception("sse orchestrate failed")
+                payload = {"type": "error", "detail": str(e)}
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+        fut = loop.run_in_executor(None, run_work)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield f"data: {json.dumps(item)}\n\n"
+        finally:
+            await fut
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "paybound-agent-api"}
+
+
+@app.post("/sessions/{session_id}/run/stream")
+def run_session_stream(session_id: str, req: RunRequest, authorization: str | None = Header(None)):
+    """SSE variant of /run — streams real pipeline-stage progress, then the
+    final OrchestratorResult. Same auth + ownership rules as /run."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
+    return _sse_response(session_id, "purchase", lambda orch, on: orch.run(session_id, req.goal, on_stage=on))
+
+
+@app.post("/sessions/{session_id}/select/stream")
+def select_stream(session_id: str, req: SelectRequest, authorization: str | None = Header(None)):
+    """SSE variant of /select — streams real stage progress, then the result."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
+    return _sse_response(session_id, "select", lambda orch, on: orch.select(session_id, req.item_id, on_stage=on))
 
 
 @app.post("/sessions/{session_id}/run")
