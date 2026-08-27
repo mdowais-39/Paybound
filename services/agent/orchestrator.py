@@ -209,15 +209,16 @@ class Orchestrator(BaseAgent):
         mandate: dict,
         skip_confidence_gate: bool = False,
         on_stage: StageCallback | None = None,
+        addon_item_id: str | None = None,
+        upsell_resolved: bool = False,
     ) -> OrchestratorResult:
         emit = _stage_emitter(on_stage)
-        # Compose the cart (+ upsell + confidence), bounded to allowed categories.
+        # Compose the cart (chosen item, + the accepted addon if the human
+        # already decided one), bounded to allowed categories for the upsell
+        # proposal below.
         emit("composing", "active")
         cart = self.cart_composer.compose(
-            session_id,
-            candidate,
-            intent,
-            allowed_categories=mandate.get("allowed_categories"),
+            session_id, candidate, intent, addon_item_id=addon_item_id
         )
         emit("composing", "success")
 
@@ -242,11 +243,78 @@ class Orchestrator(BaseAgent):
                 cart=cart_view,
             )
 
+        # A real, in-stock complement exists and the human hasn't weighed in
+        # yet (this is the first pass, not a resume of POST .../upsell) —
+        # pause and let them accept or decline it before anything is charged.
+        # The agent never adds it on its own; see cart_composer.find_upsell.
+        if not upsell_resolved:
+            addon = self.cart_composer.find_upsell(
+                candidate, mandate.get("allowed_categories"), intent
+            )
+            if addon is not None:
+                return OrchestratorResult(
+                    state="UPSELL",
+                    message=(
+                        f"Want to add {addon.get('title', 'this item')} "
+                        f"({self._rupees(addon['price_paise'])}) too? It's optional — "
+                        f"your call."
+                    ),
+                    cart_id=cart.cart_id,
+                    amount_paise=cart.total_paise,
+                    cart=cart_view,
+                    upsell_suggestion={
+                        "item_id": addon["item_id"],
+                        "title": addon.get("title", ""),
+                        "category": addon["category"],
+                        "price_paise": addon["price_paise"],
+                    },
+                )
+
         # Gate: the orchestrator (only) submits the cart to the kernel.
         result = self._checkout(session_id, cart.cart_id, afa_approved=False, on_stage=on_stage)
         result.amount_paise = cart.total_paise
         result.cart = cart_view
         return result
+
+    def resolve_upsell(
+        self,
+        session_id: str,
+        item_id: str,
+        accept: bool,
+        addon_item_id: str | None = None,
+        on_stage: StageCallback | None = None,
+    ) -> OrchestratorResult:
+        """Resume an UPSELL-paused session after the human accepted or
+        declined the suggested complement (POST /sessions/{id}/upsell).
+        `item_id` is the originally chosen item (re-derived fresh, exactly
+        like `select()`); `addon_item_id` is required only when accepting —
+        the exact item_id already shown in `upsell_suggestion`, never
+        re-searched, so what gets added is exactly what was offered. No LLM
+        call, and the confidence gate is skipped: it already passed before
+        this suggestion was ever shown."""
+        emit = _stage_emitter(on_stage)
+        for done in ("pre_checks", "parsing", "searching"):
+            emit(done, "success")
+        mandate = self.db.get_mandate_for_session(session_id)
+        item = self.call_tool("get_availability", {"item_id": item_id})
+        candidate = Candidate(
+            item_id=item["item_id"],
+            title=item["title"],
+            category=item["category"],
+            price_paise=item["price_paise"],
+            merchant_id=item["merchant_id"],
+        )
+        intent = Intent(query=item["title"], category=item["category"])
+        return self._compose_and_checkout(
+            session_id,
+            candidate,
+            intent,
+            mandate,
+            skip_confidence_gate=True,
+            on_stage=on_stage,
+            addon_item_id=addon_item_id if accept else None,
+            upsell_resolved=True,
+        )
 
     def approve(
         self, session_id: str, cart_id: str, on_stage: StageCallback | None = None

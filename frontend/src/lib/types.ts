@@ -56,6 +56,7 @@ export type SessionOutcome =
   | "NEEDS_HUMAN"
   | "CLARIFY"
   | "CHOOSE"
+  | "UPSELL"
   | "PRE_CHECK_FAILED";
 
 /** One selectable product when the agent finds several plausible matches
@@ -67,6 +68,16 @@ export interface OrchestratorOption {
   category: string;
   price_paise: number;
   merchant_id: string;
+}
+
+/** A proposed complement for the already-composed cart (state === "UPSELL").
+ * Not yet in the cart — the human accepts or declines it via
+ * POST /sessions/{id}/upsell. The agent never adds it on its own. */
+export interface UpsellSuggestion {
+  item_id: string;
+  title: string;
+  category: string;
+  price_paise: number;
 }
 
 export interface OrchestratorResult {
@@ -83,6 +94,7 @@ export interface OrchestratorResult {
   // Convenience fields the frontend derives/carries; not all come from the backend.
   cart?: CartView | null;
   amount_paise?: number;
+  upsell_suggestion?: UpsellSuggestion | null;
 }
 
 /** One durable run from the console history (GET /mandates/{id}/runs). `result`

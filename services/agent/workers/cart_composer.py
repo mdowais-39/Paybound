@@ -4,8 +4,14 @@ the orchestrator calls checkout.
 
 When the trained models are provided it uses them; otherwise it falls back to
 heuristics (so tests run without artifacts):
-  - upsell (Instacart/ESCI-C/Amazon) suggests a complement in an allowed category
-  - the Purchase Confidence Scorer (gradient-boosted) replaces the heuristic."""
+  - upsell (Instacart/ESCI-C/Amazon) proposes a complement in an allowed category
+  - the Purchase Confidence Scorer (gradient-boosted) replaces the heuristic.
+
+A proposed complement is never added to the cart automatically — `find_upsell`
+only PROPOSES one (read-only, no cart is touched). The orchestrator decides
+whether to offer it to the human, and `compose` only adds it when the caller
+explicitly passes back the accepted `addon_item_id` — the human's call, not
+the agent's, per Rule 9's spirit of never letting the agent decide on its own."""
 
 from __future__ import annotations
 
@@ -24,15 +30,18 @@ class CartComposer(BaseAgent):
         session_id: str,
         chosen: Candidate,
         intent: Intent,
-        allowed_categories: list[str] | None = None,
         clarification_turns: int = 0,
+        addon_item_id: str | None = None,
     ) -> ComposedCart:
+        """Build and submit the cart: `chosen` always, plus `addon_item_id`
+        ONLY when given — i.e. only after the human explicitly accepted it via
+        POST /sessions/{id}/upsell. Never looks up or auto-adds a complement
+        itself; see `find_upsell` for that (a separate, read-only proposal)."""
         items = [{"item_id": chosen.item_id, "qty": 1}]
         # Human-readable line items for display, built from data we already
-        # have (the chosen candidate + any complement from search) — real
-        # catalog values, never fabricated. `is_upsell` marks the complement
-        # line so the UI can label it as a suggestion rather than silently
-        # bundling it in as if the customer asked for it.
+        # have — real catalog values, never fabricated. `is_upsell` marks the
+        # accepted complement line so the UI can label it as a suggestion the
+        # customer opted into, not something bundled in silently.
         display_items = [
             {
                 "item_id": chosen.item_id,
@@ -44,23 +53,20 @@ class CartComposer(BaseAgent):
             }
         ]
 
-        # Upsell: add ONE complement item, but only in a mandate-allowed category
-        # (so the kernel still approves) and within budget.
-        upsold = False
-        complement = self._find_complement(chosen, allowed_categories, intent)
-        if complement is not None:
-            items.append({"item_id": complement["item_id"], "qty": 1})
+        upsold = addon_item_id is not None
+        if addon_item_id is not None:
+            addon = self.call_tool("get_availability", {"item_id": addon_item_id})
+            items.append({"item_id": addon_item_id, "qty": 1})
             display_items.append(
                 {
-                    "item_id": complement["item_id"],
-                    "title": complement.get("title", ""),
+                    "item_id": addon["item_id"],
+                    "title": addon.get("title", ""),
                     "qty": 1,
-                    "price_paise": complement["price_paise"],
-                    "category": complement["category"],
+                    "price_paise": addon["price_paise"],
+                    "category": addon["category"],
                     "is_upsell": True,
                 }
             )
-            upsold = True
 
         cart = self.call_tool("create_cart", {"session_id": session_id, "items": items})
         confidence = self._confidence(chosen, intent, cart, clarification_turns, upsold)
@@ -72,7 +78,13 @@ class CartComposer(BaseAgent):
             display_items=display_items,
         )
 
-    def _find_complement(self, chosen: Candidate, allowed_categories, intent) -> dict | None:
+    def find_upsell(
+        self, chosen: Candidate, allowed_categories: list[str] | None, intent: Intent
+    ) -> dict | None:
+        """PROPOSE one complement item in an allowed, in-stock, in-budget
+        category — read-only, does not touch the cart or call create_cart. The
+        orchestrator shows this to the human (state=UPSELL) and only feeds its
+        item_id back into `compose` if they accept."""
         if self.upsell is None:
             return None
         # An empty/absent allow-list means the mandate is UNRESTRICTED (same

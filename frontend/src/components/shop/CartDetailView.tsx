@@ -5,6 +5,7 @@ import { CartSession } from "./CartList";
 import { PipelineStepper } from "./PipelineStepper";
 import { OutcomeCard } from "./OutcomeCard";
 import { ChoicePicker } from "./ChoicePicker";
+import { UpsellPrompt } from "./UpsellPrompt";
 import { Pill } from "../shared/Pill";
 import { paiseToRupees, paiseToRupeesPlain } from "../../lib/money";
 import {
@@ -29,6 +30,7 @@ interface CartDetailViewProps {
   onApprove?: () => Promise<void>;
   onDecline?: () => void;
   onSelectOption?: (itemId: string) => void;
+  onResolveUpsell?: (accept: boolean) => void;
   approving?: boolean;
   onSelectScenario?: (goal: string) => void;
 }
@@ -39,6 +41,7 @@ export const CartDetailView: React.FC<CartDetailViewProps> = ({
   onApprove,
   onDecline,
   onSelectOption,
+  onResolveUpsell,
   approving = false,
   onSelectScenario,
 }) => {
@@ -104,6 +107,7 @@ export const CartDetailView: React.FC<CartDetailViewProps> = ({
   const isNeedsHuman =
     cart.result?.state === "NEEDS_HUMAN" || cart.result?.verdict === "needs_human";
   const isChoose = cart.result?.state === "CHOOSE";
+  const isUpsell = cart.result?.state === "UPSELL";
 
   const perTxnCap = mandate?.per_txn_cap_paise ?? null;
   // Real composed line items only — no fabricated placeholder.
@@ -290,8 +294,20 @@ export const CartDetailView: React.FC<CartDetailViewProps> = ({
         />
       )}
 
-      {/* 7. Kernel Outcome Card (non-CHOOSE terminal states) */}
-      {cart.result && !isChoose && !cart.error && (
+      {/* 6b. UPSELL — a real, in-stock complement was found; the human
+          accepts or declines it before the cart goes to the kernel gate. */}
+      {isUpsell && cart.result?.upsell_suggestion && !cart.error && (
+        <UpsellPrompt
+          message={cart.result.message}
+          suggestion={cart.result.upsell_suggestion}
+          onAccept={() => onResolveUpsell?.(true)}
+          onDecline={() => onResolveUpsell?.(false)}
+          loading={approving}
+        />
+      )}
+
+      {/* 7. Kernel Outcome Card (non-CHOOSE, non-UPSELL terminal states) */}
+      {cart.result && !isChoose && !isUpsell && !cart.error && (
         cart.declined ? (
           <div className="bg-white border border-[#E5E7EB] border-l-4 border-l-[#6B7280] rounded-xl p-5 shadow-xs">
             <p className="text-sm font-semibold text-[#111827]">You declined this purchase.</p>

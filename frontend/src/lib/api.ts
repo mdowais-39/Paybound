@@ -243,6 +243,26 @@ export function selectOptionStream(
   );
 }
 
+/** Resume an UPSELL-paused session with the human's accept/decline on the
+ * suggested complement. `addonItemId` is required only when accepting — the
+ * exact item_id from `upsell_suggestion`, never re-searched. */
+export function resolveUpsellStream(
+  sessionId: string,
+  itemId: string,
+  accept: boolean,
+  addonItemId: string | undefined,
+  onStage: OnStage,
+  runId?: string,
+  goal?: string,
+): Promise<OrchestratorResult> {
+  return streamOrchestrate(
+    `${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/upsell/stream`,
+    { item_id: itemId, accept, addon_item_id: addonItemId, run_id: runId, goal },
+    onStage,
+    "resolveUpsell",
+  );
+}
+
 /** Resume a NEEDS_HUMAN session with the human's approval. */
 export async function approveSession(
   sessionId: string,

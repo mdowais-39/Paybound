@@ -60,7 +60,7 @@ class ComposedCart:
 class OrchestratorResult:
     """The outcome of running one purchase session."""
 
-    state: str  # COMPLETED | REFUSED | NEEDS_HUMAN | CLARIFY | CHOOSE | PRE_CHECK_FAILED | AUTHORIZED
+    state: str  # COMPLETED | REFUSED | NEEDS_HUMAN | CLARIFY | CHOOSE | UPSELL | PRE_CHECK_FAILED | AUTHORIZED
     message: str
     verdict: str | None = None
     rule_cited: str | None = None
@@ -77,3 +77,8 @@ class OrchestratorResult:
     #: Human-readable cart line items for display (title/price/category), when
     #: a cart was built. Sourced from the real catalog — not fabricated.
     cart: dict | None = None
+    #: Present only in state=UPSELL — a complement item found for the ALREADY-
+    #: composed cart (real catalog data: item_id/title/category/price_paise).
+    #: Not yet in the cart; the human accepts or declines it via
+    #: POST /sessions/{id}/upsell. The agent never adds it on its own.
+    upsell_suggestion: dict | None = None

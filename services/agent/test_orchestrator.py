@@ -9,6 +9,7 @@ from services.agent.base_agent import UnauthorizedTool
 from services.agent.models import Intent
 from services.agent.orchestrator import Orchestrator
 from services.agent.workers.discovery import DiscoveryWorker
+from services.upsell.model import UpsellModel
 
 FUTURE = int(time.time()) + 3600
 PAST = int(time.time()) - 3600
@@ -29,7 +30,12 @@ class FakeLLM:
 class FakeMcp:
     """Canned tool responses; records the tools called."""
 
-    def __init__(self, checkout_result: dict, search_items: list[dict] | None = None):
+    def __init__(
+        self,
+        checkout_result: dict,
+        search_items: list[dict] | None = None,
+        complement_items: dict[str, list[dict]] | None = None,
+    ):
         self.checkout_result = checkout_result
         self.calls: list[str] = []
         # `is None` (not `or`) so an explicit empty list stays empty — the
@@ -42,21 +48,35 @@ class FakeMcp:
             if search_items is None
             else search_items
         )
+        # Results for a search_catalog query OTHER than the main intent query
+        # — i.e. an upsell's complement-category lookup (e.g. "sporting
+        # goods"). Keyed by the exact query string. Empty by default, so
+        # existing tests (no upsell model injected) are unaffected.
+        self.complement_items = complement_items or {}
+
+    def _all_items(self) -> list[dict]:
+        return self.search_items + [it for items in self.complement_items.values() for it in items]
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         self.calls.append(name)
         if name == "search_catalog":
+            q = arguments.get("query")
+            if q in self.complement_items:
+                return {"items": self.complement_items[q]}
             return {"items": self.search_items}
         if name == "get_availability":
-            for it in self.search_items:
+            for it in self._all_items():
                 if it["item_id"] == arguments["item_id"]:
                     return {**it, "available": True}
             raise RuntimeError(f"tool 'get_availability' failed: item {arguments['item_id']} not found")
         if name == "create_cart":
-            item_id = arguments["items"][0]["item_id"]
-            price = next((it["price_paise"] for it in self.search_items if it["item_id"] == item_id), 285000)
-            return {"cart_id": "cart-1", "total_paise": price,
-                    "line_items": [{"item_id": item_id, "qty": 1}]}
+            all_items = self._all_items()
+            total = sum(
+                next((it["price_paise"] for it in all_items if it["item_id"] == i["item_id"]), 285000)
+                for i in arguments["items"]
+            )
+            return {"cart_id": "cart-1", "total_paise": total,
+                    "line_items": [{"item_id": i["item_id"], "qty": 1} for i in arguments["items"]]}
         if name == "checkout":
             # honour the AFA-approval resume path if the fake was set up for it
             if callable(self.checkout_result):
@@ -216,6 +236,108 @@ def test_select_composes_and_checks_out_the_chosen_item():
     assert result.state == "AUTHORIZED"
     assert result.payment_link == "https://rzp.io/picked"
     assert mcp.calls == ["get_availability", "create_cart", "checkout"]
+
+
+# --- UPSELL: the human accepts or declines a suggested complement ----------
+
+SPORT_ITEM = {"item_id": "44444444-4444-4444-4444-444444444444", "merchant_id": "m",
+              "title": "Running Belt", "category": "sporting goods", "price_paise": 45000}
+
+
+def _upsell_orch(checkout_result, confidence=None) -> tuple[Orchestrator, FakeMcp]:
+    mcp = FakeMcp(checkout_result, complement_items={"sporting goods": [SPORT_ITEM]})
+    upsell = UpsellModel(category_complements={"footwear": ["sporting goods"]})
+    # An unrestricted mandate (empty allow-list) — the current default, and
+    # the exact shape that regressed upsell before this fix.
+    m = {**mandate(), "allowed_categories": []}
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m), upsell=upsell, confidence=confidence)
+    return orch, mcp
+
+
+def test_upsell_pauses_before_checkout_instead_of_auto_adding():
+    """The whole point: a real in-stock complement must be OFFERED, never
+    silently bundled into a cart that goes straight to the kernel gate."""
+    orch, mcp = _upsell_orch({"verdict": "approved", "payment_link": "https://rzp.io/x"})
+    intent = Intent(query="running shoes", category="footwear")
+
+    result = orch.run("s1", "buy running shoes", parsed_intent=intent)
+
+    assert result.state == "UPSELL"
+    assert result.upsell_suggestion is not None
+    assert result.upsell_suggestion["item_id"] == SPORT_ITEM["item_id"]
+    assert result.upsell_suggestion["category"] == "sporting goods"
+    # A real (1-item) cart WAS composed — the base purchase is ready to go,
+    # just paused pending the human's addon decision.
+    assert result.cart_id == "cart-1"
+    assert len(result.cart["line_items"]) == 1
+    assert "checkout" not in mcp.calls
+
+
+def test_upsell_accept_adds_the_addon_and_checks_out():
+    orch, mcp = _upsell_orch({"verdict": "approved", "payment_link": "https://rzp.io/x"})
+    intent = Intent(query="running shoes", category="footwear")
+    paused = orch.run("s1", "buy running shoes", parsed_intent=intent)
+
+    resumed = orch.resolve_upsell(
+        "s1", paused.cart["line_items"][0]["item_id"], accept=True,
+        addon_item_id=paused.upsell_suggestion["item_id"],
+    )
+
+    assert resumed.state == "AUTHORIZED"
+    items = resumed.cart["line_items"]
+    assert len(items) == 2
+    assert items[0]["is_upsell"] is False
+    assert items[1]["is_upsell"] is True
+    assert items[1]["item_id"] == SPORT_ITEM["item_id"]
+    assert resumed.amount_paise == 285000 + 45000
+
+
+def test_upsell_decline_checks_out_without_the_addon():
+    orch, mcp = _upsell_orch({"verdict": "approved", "payment_link": "https://rzp.io/x"})
+    intent = Intent(query="running shoes", category="footwear")
+    paused = orch.run("s1", "buy running shoes", parsed_intent=intent)
+
+    resumed = orch.resolve_upsell(
+        "s1", paused.cart["line_items"][0]["item_id"], accept=False,
+    )
+
+    assert resumed.state == "AUTHORIZED"
+    items = resumed.cart["line_items"]
+    assert len(items) == 1
+    assert resumed.amount_paise == 285000
+
+
+def test_low_confidence_routes_to_needs_human_before_any_upsell_offer():
+    """The confidence gate must run BEFORE an upsell is ever offered — a
+    shaky match should not get dressed up with an unrelated add-on prompt."""
+    orch, mcp = _upsell_orch(
+        {"verdict": "approved"}, confidence=FakeConfidence(0.1)
+    )
+    intent = Intent(query="running shoes", category="footwear")
+
+    result = orch.run("s1", "buy running shoes", parsed_intent=intent)
+
+    assert result.state == "NEEDS_HUMAN"
+    assert result.rule_cited == "low_confidence"
+    assert "checkout" not in mcp.calls
+
+
+def test_upsell_also_offered_after_a_choose_selection():
+    """The CHOOSE -> select() path (skip_confidence_gate=True) must still get
+    offered an upsell — that flag only bypasses the confidence check, not the
+    separate human-decides-the-addon step."""
+    mcp = FakeMcp(
+        {"verdict": "approved"}, search_items=MULTI,
+        complement_items={"sporting goods": [SPORT_ITEM]},
+    )
+    upsell = UpsellModel(category_complements={"footwear": ["sporting goods"]})
+    m = {**mandate(), "allowed_categories": []}
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m), upsell=upsell)
+
+    result = orch.select("s1", "22222222-2222-2222-2222-222222222222")
+
+    assert result.state == "UPSELL"
+    assert "checkout" not in mcp.calls
 
 
 def test_select_rejects_item_outside_allowed_category():

@@ -6,7 +6,14 @@ import { CartDetailView } from "../components/shop/CartDetailView";
 import { GoalInput } from "../components/shop/GoalInput";
 import { Pill } from "../components/shared/Pill";
 import { SpendMeter } from "../components/layout/SpendMeter";
-import { runAgentStream, selectOptionStream, approveSession, listRuns, deleteRun } from "../lib/api";
+import {
+  runAgentStream,
+  selectOptionStream,
+  approveSession,
+  resolveUpsellStream,
+  listRuns,
+  deleteRun,
+} from "../lib/api";
 import { PipelineStageState, OrchestratorResult, SessionOutcome } from "../lib/types";
 import {
   loadCarts,
@@ -74,6 +81,17 @@ function stagesForState(state: SessionOutcome): PipelineStageState[] {
         stage("kernel_gate", "idle"),
         stage("outcome", "idle"),
       ];
+    case "UPSELL":
+      // A real (1-item) cart was already composed — just paused pending the
+      // human's accept/decline on the suggested add-on.
+      return [
+        stage("pre_checks", "success"),
+        stage("parsing", "success"),
+        stage("searching", "success"),
+        stage("composing", "success"),
+        stage("kernel_gate", "idle"),
+        stage("outcome", "idle"),
+      ];
     case "REFUSED":
       return [
         stage("pre_checks", "success"),
@@ -111,7 +129,7 @@ function verdictForStepper(state: SessionOutcome): "approved" | "refused" | "nee
   if (state === "AUTHORIZED" || state === "COMPLETED") return "approved";
   if (state === "REFUSED" || state === "PRE_CHECK_FAILED") return "refused";
   if (state === "NEEDS_HUMAN") return "needs_human";
-  if (state === "CLARIFY" || state === "CHOOSE") return "clarify";
+  if (state === "CLARIFY" || state === "CHOOSE" || state === "UPSELL") return "clarify";
   return null;
 }
 
@@ -353,6 +371,42 @@ export const ShopPage: React.FC = () => {
     patchCart(selectedCart.id, { declined: true });
   };
 
+  // The human's accept/decline on a suggested complement (state === "UPSELL").
+  // The base item's id comes from the already-composed 1-item cart preview;
+  // the addon's id (only needed on accept) is exactly what was shown — never
+  // re-searched.
+  const handleResolveUpsell = async (accept: boolean) => {
+    if (!sessionId || !selectedCart?.result) return;
+    const baseItemId = selectedCart.result.cart?.line_items?.[0]?.item_id;
+    const addonItemId = selectedCart.result.upsell_suggestion?.item_id;
+    if (!baseItemId || (accept && !addonItemId)) return;
+    setApproving(true);
+    const cartId = selectedCart.id;
+    const goal = selectedCart.goal;
+    patchCart(cartId, {
+      stages: PENDING_STAGES.map((s, i) => (i < 4 ? { ...s, status: "success" as const } : s)),
+      isComplete: false,
+      title: accept ? "Adding suggested item…" : "Finalizing cart…",
+    });
+    try {
+      const result = await resolveUpsellStream(
+        sessionId,
+        baseItemId,
+        accept,
+        accept ? addonItemId : undefined,
+        (evt) => applyStageEvent(cartId, evt.id, evt.status),
+        cartId,
+        goal,
+      );
+      applyResult(cartId, goal, result);
+      await refreshMandates();
+    } catch (err: any) {
+      patchCart(cartId, { isComplete: true, error: err?.message || "Couldn't resolve the suggestion." });
+    } finally {
+      setApproving(false);
+    }
+  };
+
   return (
     <div id="page-shop" className="flex flex-col min-h-[calc(100vh-12rem)] pb-32">
       {/* Active Mandate Context Strip */}
@@ -423,6 +477,7 @@ export const ShopPage: React.FC = () => {
             onApprove={handleApprove}
             onDecline={handleDecline}
             onSelectOption={handleSelectOption}
+            onResolveUpsell={handleResolveUpsell}
             approving={approving}
             onSelectScenario={handleSendGoal}
           />

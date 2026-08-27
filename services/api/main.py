@@ -101,6 +101,17 @@ class SelectRequest(BaseModel):
     goal: str | None = None
 
 
+class UpsellRequest(BaseModel):
+    # The originally chosen item (re-derived fresh, like SelectRequest.item_id).
+    item_id: str
+    accept: bool
+    # Required only when accept=true — the exact item_id from the
+    # upsell_suggestion the human was shown (never re-searched).
+    addon_item_id: str | None = None
+    run_id: str | None = None
+    goal: str | None = None
+
+
 def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -141,6 +152,7 @@ def _result_json(orch: Orchestrator, result, trace_id: str | None) -> dict:
         "options": result.options,
         "amount_paise": result.amount_paise,
         "cart": result.cart,
+        "upsell_suggestion": result.upsell_suggestion,
         "trace_id": trace_id,
         "llm_calls": orch.llm.calls,
     }
@@ -246,6 +258,21 @@ def select_stream(session_id: str, req: SelectRequest, authorization: str | None
     )
 
 
+@app.post("/sessions/{session_id}/upsell/stream")
+def resolve_upsell_stream(session_id: str, req: UpsellRequest, authorization: str | None = Header(None)):
+    """SSE variant of /upsell — streams real stage progress, then the result."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
+    return _sse_response(
+        session_id,
+        "upsell",
+        lambda orch, on: orch.resolve_upsell(
+            session_id, req.item_id, req.accept, addon_item_id=req.addon_item_id, on_stage=on
+        ),
+        record=lambda rj: _record_run(session_id, req.run_id, req.goal, rj),
+    )
+
+
 @app.post("/sessions/{session_id}/run")
 def run_session(session_id: str, req: RunRequest, authorization: str | None = Header(None)) -> dict:
     """Run the agent on one natural-language goal against an existing session
@@ -294,6 +321,36 @@ def select_option(session_id: str, req: SelectRequest, authorization: str | None
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("agent select failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    rj = _result_json(orch, result, trace_id)
+    _record_run(session_id, req.run_id, req.goal, rj)
+    return rj
+
+
+@app.post("/sessions/{session_id}/upsell")
+def resolve_upsell(session_id: str, req: UpsellRequest, authorization: str | None = Header(None)) -> dict:
+    """Resume an UPSELL-paused session after the human accepted or declined
+    the suggested complement (POST /sessions/{id}/run or /select returned
+    state=UPSELL with an `upsell_suggestion`). No LLM call, and the confidence
+    gate is skipped — it already passed before the suggestion was shown."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
+    orch = _orchestrator()
+    tracer = _state["tracer"]
+    trace_id = None
+    try:
+        with tracer.start_as_current_span("upsell") as span:
+            span.set_attribute("session_id", session_id)
+            span.set_attribute("item_id", req.item_id)
+            span.set_attribute("accept", req.accept)
+            result = orch.resolve_upsell(
+                session_id, req.item_id, req.accept, addon_item_id=req.addon_item_id
+            )
+            trace_id = format(span.get_span_context().trace_id, "032x")
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("agent upsell resolution failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
     rj = _result_json(orch, result, trace_id)
     _record_run(session_id, req.run_id, req.goal, rj)
