@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO intent_mandate\n           (mandate_id, payer, budget_total_paise, per_txn_cap_paise, allowed_categories,\n            allowed_merchants, ttl, nl_goal, public_key, signature)\n         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)\n         RETURNING mandate_id",
+  "query": "INSERT INTO intent_mandate\n           (mandate_id, payer, budget_total_paise, per_txn_cap_paise, allowed_categories,\n            allowed_merchants, ttl, nl_goal, public_key, signature, owner_token_hash)\n         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)\n         RETURNING mandate_id",
   "describe": {
     "columns": [
       {
@@ -20,6 +20,7 @@
         "Timestamptz",
         "Text",
         "Text",
+        "Text",
         "Text"
       ]
     },
@@ -27,5 +28,5 @@
       false
     ]
   },
-  "hash": "0ce9746f0f2691ec1a9ab7345f00abed778d81dfeb1ff156db81fccc72341834"
+  "hash": "13a8b90af20b954933360cdc4df4ce861e1293fd23b0bb7ae056d505ef2b3c2c"
 }

@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.mandate_id, m.payer, m.budget_total_paise, m.per_txn_cap_paise,\n                m.allowed_categories, m.allowed_merchants, m.ttl, m.nl_goal,\n                (m.revoked_at IS NOT NULL) AS \"revoked!\",\n                s.session_id AS \"session_id?\", s.state AS \"session_state?\",\n                s.running_spend_paise AS \"running_spend_paise?\"\n         FROM intent_mandate m\n         LEFT JOIN LATERAL (\n             SELECT session_id, state, running_spend_paise FROM purchase_session\n             WHERE mandate_id = m.mandate_id ORDER BY created_at ASC LIMIT 1\n         ) s ON true\n         WHERE m.owner_token_hash = $2\n         ORDER BY m.created_at DESC LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mandate_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "payer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "budget_total_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "per_txn_cap_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "allowed_categories",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "allowed_merchants",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "ttl",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "nl_goal",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "revoked!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "session_id?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "session_state?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "running_spend_paise?",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "064e35f506a1c4c47e6a1d84752c570d0ddc0dce90db103d55adcf64b95b76de"
+}

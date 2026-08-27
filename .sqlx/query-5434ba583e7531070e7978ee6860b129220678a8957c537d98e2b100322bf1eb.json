@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.session_id, s.mandate_id, s.state, s.running_spend_paise,\n                m.budget_total_paise, m.per_txn_cap_paise,\n                (SELECT cart_id FROM cart_mandate WHERE session_id = s.session_id\n                   ORDER BY created_at DESC LIMIT 1) AS \"latest_cart_id?\"\n         FROM purchase_session s JOIN intent_mandate m USING (mandate_id)\n         WHERE s.session_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "mandate_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "running_spend_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "budget_total_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "per_txn_cap_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "latest_cart_id?",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "5434ba583e7531070e7978ee6860b129220678a8957c537d98e2b100322bf1eb"
+}

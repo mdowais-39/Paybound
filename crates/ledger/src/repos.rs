@@ -395,3 +395,12 @@ pub async fn list_categories(pool: &Db, merchant_id: Uuid) -> Result<Vec<String>
     .await
     .map_err(db_err)
 }
+
+/// Every distinct category across the whole catalog — the category picker for a
+/// marketplace-wide mandate (no single merchant).
+pub async fn list_all_categories(pool: &Db) -> Result<Vec<String>, AppError> {
+    sqlx::query_scalar!("SELECT DISTINCT category FROM catalog_item ORDER BY category")
+        .fetch_all(pool)
+        .await
+        .map_err(db_err)
+}

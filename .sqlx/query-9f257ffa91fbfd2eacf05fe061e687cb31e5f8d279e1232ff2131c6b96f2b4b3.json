@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.owner_token_hash FROM purchase_session s\n         JOIN intent_mandate m USING (mandate_id) WHERE s.session_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner_token_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9f257ffa91fbfd2eacf05fe061e687cb31e5f8d279e1232ff2131c6b96f2b4b3"
+}

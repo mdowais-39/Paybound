@@ -23,11 +23,6 @@ use time::{Duration, OffsetDateTime};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
-/// The demo storefront's catalog owner — the merchant a mandate is scoped to
-/// when the caller doesn't specify one. Falls back to the first merchant in
-/// the DB if it isn't found (e.g. before the ingest script has run).
-const DEFAULT_MERCHANT_NAME: &str = "Paybound Demo Store";
-
 /// A tiny token-bucket rate limiter (no external deps). Refills continuously;
 /// requests over the rate get 429. Applied globally to the gateway.
 struct TokenBucket {
@@ -302,24 +297,21 @@ async fn create_mandate(
         return Err(bad_request("ttl_seconds must be > 0"));
     }
 
-    let merchant_id = match req.merchant_id {
-        Some(id) => id,
-        None => repos::find_merchant_by_name(&s.pool, DEFAULT_MERCHANT_NAME)
-            .await
-            .map_err(internal)?
-            .ok_or_else(|| {
-                bad_request(format!(
-                    "no merchant found; specify merchant_id or ingest the demo catalog \
-                     (default '{DEFAULT_MERCHANT_NAME}' not found)"
-                ))
-            })?,
+    // Merchant scope. Omitting merchant_id means "shop the whole marketplace":
+    // an EMPTY allowed_merchants list, which the kernel treats as unrestricted
+    // on the merchant axis (the budget / per-txn cap / TTL still bind). This is
+    // what a customer expects — searching "headphones" shouldn't silently find
+    // nothing just because headphones live in a different sub-merchant than the
+    // default store. Passing a specific merchant_id still scopes to it.
+    let allowed_merchants: Vec<Uuid> = match req.merchant_id {
+        Some(id) => vec![id],
+        None => vec![],
     };
-    let allowed_categories = match req.allowed_categories {
-        Some(cats) if !cats.is_empty() => cats,
-        _ => repos::list_categories(&s.pool, merchant_id)
-            .await
-            .map_err(internal)?,
-    };
+    // Category scope. Omitting categories (or []) means "any category" — again
+    // an empty allow-list the kernel treats as unrestricted. We no longer
+    // pre-fill the default merchant's categories, since a marketplace-wide
+    // mandate has no single merchant to read them from.
+    let allowed_categories = req.allowed_categories.unwrap_or_default();
 
     let key = common::signing::generate_keypair();
     let mandate = IntentMandate::new_signed(
@@ -329,7 +321,7 @@ async fn create_mandate(
         req.budget_total_paise,
         req.per_txn_cap_paise,
         allowed_categories.clone(),
-        vec![merchant_id],
+        allowed_merchants,
         OffsetDateTime::now_utc() + Duration::seconds(req.ttl_seconds),
         req.nl_goal.as_str(),
     );
@@ -441,23 +433,23 @@ pub struct CategoriesQuery {
     pub merchant_id: Option<Uuid>,
 }
 
-/// The distinct categories a merchant sells — feeds the mandate form's
-/// category picker. Defaults to the demo storefront's merchant.
+/// Distinct catalog categories — feeds the mandate form's category picker.
+/// With `?merchant_id=` it's that merchant's categories; without, it's every
+/// category across the whole marketplace (matching the marketplace-wide
+/// default mandate).
 #[tracing::instrument(name = "list_categories", level = "info", skip(s))]
 async fn list_categories(
     State(s): State<AppState>,
     Query(q): Query<CategoriesQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let merchant_id = match q.merchant_id {
-        Some(id) => id,
-        None => repos::find_merchant_by_name(&s.pool, DEFAULT_MERCHANT_NAME)
+    let cats = match q.merchant_id {
+        Some(id) => repos::list_categories(&s.pool, id)
             .await
-            .map_err(internal)?
-            .ok_or_else(|| bad_request("no merchant found; specify ?merchant_id="))?,
+            .map_err(internal)?,
+        None => repos::list_all_categories(&s.pool)
+            .await
+            .map_err(internal)?,
     };
-    let cats = repos::list_categories(&s.pool, merchant_id)
-        .await
-        .map_err(internal)?;
     Ok(Json(json!(cats)))
 }
 
