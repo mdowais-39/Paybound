@@ -138,6 +138,30 @@ impl ExecutionPlane {
         .await
         .map_err(db)?;
 
+        // Commit this amount against the mandate's cumulative budget NOW, at
+        // authorization — not when a `payment_link.paid` webhook eventually
+        // arrives. The kernel's over_cumulative_budget check reads this same
+        // field for every SUBSEQUENT purchase in the session; if it only moved
+        // on webhook confirmation, a demo/manual flow that stops at "here's
+        // your payment link" (the common case — nobody's obligated to click
+        // it) would let the agent get approved for purchase after purchase
+        // with the budget never visibly shrinking, silently defeating the
+        // cumulative cap. This is a genuine authorization hold, exactly like a
+        // credit card reducing available credit the moment a merchant
+        // authorizes a charge, before settlement days later. `on_payment_paid`
+        // no longer touches this field (it was already committed here);
+        // `on_payment_failed` releases it back, since the money never moved.
+        sqlx::query!(
+            "UPDATE purchase_session
+             SET running_spend_paise = running_spend_paise + $1, updated_at = now()
+             WHERE session_id = $2",
+            auth.amount_paise,
+            session_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+
         let ledger = AuditLedger::new(&self.pool);
         ledger
             .append(
@@ -195,9 +219,12 @@ impl ExecutionPlane {
         })
     }
 
-    /// Handle a verified `payment_link.paid` webhook: mark the effect paid, move
-    /// the session to COMPLETED, add the amount to running spend, and audit it.
-    /// Idempotent: a redelivered event is a no-op (the `pending` guard).
+    /// Handle a verified `payment_link.paid` webhook: mark the effect paid,
+    /// move the session to COMPLETED, and audit it. Does NOT touch
+    /// `running_spend_paise` — that was already committed in `authorize()`,
+    /// at the moment the kernel approved and the link was issued; crediting it
+    /// again here would double-count the same purchase. Idempotent: a
+    /// redelivered event is a no-op (the `pending` guard).
     pub async fn on_payment_paid(&self, razorpay_ref: &str) -> Result<bool, AppError> {
         let updated = sqlx::query!(
             "UPDATE payment_effect SET outcome = 'success'
@@ -210,17 +237,6 @@ impl ExecutionPlane {
         .map_err(db)?;
 
         let Some(row) = updated else { return Ok(false) };
-
-        sqlx::query!(
-            "UPDATE purchase_session
-             SET running_spend_paise = running_spend_paise + $1, updated_at = now()
-             WHERE session_id = $2",
-            row.amount_paise,
-            row.session_id
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(db)?;
 
         AuditLedger::new(&self.pool)
             .append(
@@ -235,7 +251,9 @@ impl ExecutionPlane {
 
     /// Handle a verified payment failure (e.g. paid with `failure@razorpay`).
     /// Records a clean failure with NO hallucinated success; the session does
-    /// not complete. Idempotent.
+    /// not complete. Releases the authorization hold `authorize()` placed on
+    /// `running_spend_paise` — the money never moved, so it must not keep
+    /// counting against the mandate's budget for future purchases. Idempotent.
     pub async fn on_payment_failed(&self, razorpay_ref: &str) -> Result<bool, AppError> {
         let updated = sqlx::query!(
             "UPDATE payment_effect SET outcome = 'failed'
@@ -248,6 +266,17 @@ impl ExecutionPlane {
         .map_err(db)?;
 
         let Some(row) = updated else { return Ok(false) };
+
+        sqlx::query!(
+            "UPDATE purchase_session
+             SET running_spend_paise = running_spend_paise - $1, updated_at = now()
+             WHERE session_id = $2",
+            row.amount_paise,
+            row.session_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
 
         AuditLedger::new(&self.pool)
             .append(

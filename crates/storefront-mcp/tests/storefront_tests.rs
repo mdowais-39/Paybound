@@ -2,14 +2,36 @@
 //! heart: `checkout` routes to the kernel and returns an approval or a typed
 //! refusal — it never pays.
 
+use async_trait::async_trait;
 use common::signing::generate_keypair;
 use domain::IntentMandate;
+use execution::{ExecConfig, ExecutionPlane};
 use ledger::repos::{self, NewIntentMandate};
+use razorpay_client::{Order, PaymentGateway, PaymentLink, PaymentLinkRequest};
 use serde_json::json;
 use sqlx::PgPool;
+use std::sync::Arc;
 use storefront_mcp::{CartItemReq, Storefront};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
+
+/// A fake gateway that always succeeds — no network, deterministic.
+#[derive(Clone, Default)]
+struct FakeGateway;
+
+#[async_trait]
+impl PaymentGateway for FakeGateway {
+    async fn create_order(&self, amount: i64, _r: &str) -> Result<Order, common::AppError> {
+        Ok(Order { id: "o".into(), status: "created".into(), amount })
+    }
+    async fn create_payment_link(&self, req: &PaymentLinkRequest) -> Result<PaymentLink, common::AppError> {
+        Ok(PaymentLink { id: format!("plink_{}", req.reference_id), status: "created".into(),
+                          short_url: "https://rzp.io/fake".into(), amount: req.amount })
+    }
+    async fn fetch_payment_link(&self, id: &str) -> Result<PaymentLink, common::AppError> {
+        Ok(PaymentLink { id: id.into(), status: "created".into(), short_url: "https://rzp.io/fake".into(), amount: 0 })
+    }
+}
 
 /// Seed a merchant + two footwear items and return (merchant_id, cheap, pricey).
 async fn seed_catalog(pool: &PgPool) -> (Uuid, Uuid, Uuid) {
@@ -143,6 +165,53 @@ async fn checkout_over_cap_is_refused_by_kernel(pool: PgPool) {
         repos::get_session_state(&pool, session).await.unwrap(),
         "REFUSED"
     );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn second_purchase_in_same_session_respects_cumulative_spend(pool: PgPool) {
+    // This is the exact bug the fix closes: running_spend_paise used to update
+    // only on a `payment_link.paid` webhook, which this product's flow never
+    // fires (it stops at "here's your payment link"). That silently defeated
+    // the cumulative-budget bound across repeat purchases in one session — the
+    // agent could keep getting approved past the mandate's total. It must now
+    // update at authorization time, so a THIRD purchase that would push
+    // cumulative spend over budget is correctly refused, even though nothing
+    // was ever "paid".
+    let (merchant, cheap, _pricey) = seed_catalog(&pool).await;
+    // Two MORE distinct items at the same price. Using the same item_id twice
+    // would produce the same cart_hash (and thus the same idempotency key) —
+    // correctly deduplicated as a RETRY of the same purchase, not counted as a
+    // second one. Three distinct items isolates the thing under test: does
+    // running_spend actually accumulate across genuinely separate purchases.
+    let item_b = insert_item(&pool, merchant, "Trail Runner Shoe B", "footwear", 150_000).await;
+    let item_c = insert_item(&pool, merchant, "Trail Runner Shoe C", "footwear", 150_000).await;
+    // Budget covers exactly two 150_000 purchases, not three.
+    let session = seed_session(&pool, merchant, 300_000, 300_000).await;
+    let exec = Arc::new(ExecutionPlane::new(
+        pool.clone(),
+        Arc::new(FakeGateway),
+        ExecConfig::default(),
+    ));
+    let store = Storefront::with_execution(pool.clone(), exec);
+
+    for item in [cheap, item_b] {
+        let cart = store
+            .create_cart(session, &[CartItemReq { item_id: item, qty: 1 }])
+            .await
+            .unwrap();
+        let result = store.checkout(session, cart.cart_id, false).await.unwrap();
+        assert_eq!(result.verdict, "approved");
+    }
+
+    // 150_000 * 2 already committed; a third pushes cumulative spend to
+    // 450_000 against a 300_000 budget.
+    let cart3 = store
+        .create_cart(session, &[CartItemReq { item_id: item_c, qty: 1 }])
+        .await
+        .unwrap();
+    let result3 = store.checkout(session, cart3.cart_id, false).await.unwrap();
+    assert_eq!(result3.verdict, "refused");
+    assert_eq!(result3.rule_cited.as_deref(), Some("over_cumulative_budget"));
 }
 
 #[sqlx::test(migrations = "../../migrations")]

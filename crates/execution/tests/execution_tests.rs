@@ -141,8 +141,38 @@ async fn duplicate_authorize_does_not_double_charge(pool: PgPool) {
     assert_eq!(n, 1);
 }
 
+async fn spend(pool: &PgPool, session: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT running_spend_paise FROM purchase_session WHERE session_id=$1")
+        .bind(session)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 #[sqlx::test(migrations = "../../migrations")]
-async fn paid_webhook_completes_session_and_is_idempotent(pool: PgPool) {
+async fn authorize_commits_spend_immediately_not_on_a_later_webhook(pool: PgPool) {
+    // The whole point of the fix: the kernel's cumulative-budget check reads
+    // running_spend_paise on every SUBSEQUENT purchase in the session. If it
+    // only moved once a `payment_link.paid` webhook arrived, a flow that stops
+    // at "here's your payment link" (the common case) would leave it at zero
+    // forever, silently defeating the cumulative cap across repeat purchases.
+    let (session, mandate) = seed_session(&pool).await;
+    let gw = FakeGateway::default();
+    let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
+
+    assert_eq!(spend(&pool, session).await, 0);
+    exec.authorize(session, &auth(mandate, 285_000))
+        .await
+        .unwrap();
+    assert_eq!(
+        spend(&pool, session).await,
+        285_000,
+        "spend must be committed the moment the kernel approves and a link is issued"
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn paid_webhook_completes_session_without_double_counting_spend(pool: PgPool) {
     let (session, mandate) = seed_session(&pool).await;
     let gw = FakeGateway::default();
     let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
@@ -150,34 +180,26 @@ async fn paid_webhook_completes_session_and_is_idempotent(pool: PgPool) {
         .authorize(session, &auth(mandate, 285_000))
         .await
         .unwrap();
+    assert_eq!(spend(&pool, session).await, 285_000, "committed at authorize()");
 
     assert!(exec.on_payment_paid(&r.razorpay_ref).await.unwrap());
     assert_eq!(
         repos::get_session_state(&pool, session).await.unwrap(),
         "COMPLETED"
     );
-
-    let spend: i64 =
-        sqlx::query_scalar("SELECT running_spend_paise FROM purchase_session WHERE session_id=$1")
-            .bind(session)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(spend, 285_000);
+    assert_eq!(
+        spend(&pool, session).await,
+        285_000,
+        "the paid webhook must NOT add the amount again on top of the authorize()-time commit"
+    );
 
     // Redelivery is a no-op (returns false, no double-count).
     assert!(!exec.on_payment_paid(&r.razorpay_ref).await.unwrap());
-    let spend2: i64 =
-        sqlx::query_scalar("SELECT running_spend_paise FROM purchase_session WHERE session_id=$1")
-            .bind(session)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(spend2, 285_000);
+    assert_eq!(spend(&pool, session).await, 285_000);
 }
 
 #[sqlx::test(migrations = "../../migrations")]
-async fn failed_webhook_records_clean_failure_without_completing(pool: PgPool) {
+async fn failed_webhook_records_clean_failure_and_releases_the_hold(pool: PgPool) {
     let (session, mandate) = seed_session(&pool).await;
     let gw = FakeGateway::default();
     let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
@@ -185,6 +207,7 @@ async fn failed_webhook_records_clean_failure_without_completing(pool: PgPool) {
         .authorize(session, &auth(mandate, 285_000))
         .await
         .unwrap();
+    assert_eq!(spend(&pool, session).await, 285_000, "held at authorize()");
 
     assert!(exec.on_payment_failed(&r.razorpay_ref).await.unwrap());
 
@@ -199,6 +222,13 @@ async fn failed_webhook_records_clean_failure_without_completing(pool: PgPool) {
     assert_ne!(
         repos::get_session_state(&pool, session).await.unwrap(),
         "COMPLETED"
+    );
+    // The money never moved — the hold must be released back to the mandate's
+    // available budget for further purchases.
+    assert_eq!(
+        spend(&pool, session).await,
+        0,
+        "a failed payment must release its authorization hold"
     );
 }
 

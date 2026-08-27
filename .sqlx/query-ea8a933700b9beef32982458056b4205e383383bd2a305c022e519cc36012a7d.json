@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE purchase_session\n             SET running_spend_paise = running_spend_paise - $1, updated_at = now()\n             WHERE session_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ea8a933700b9beef32982458056b4205e383383bd2a305c022e519cc36012a7d"
+}
