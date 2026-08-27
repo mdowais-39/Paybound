@@ -6,7 +6,7 @@ import { CartDetailView } from "../components/shop/CartDetailView";
 import { GoalInput } from "../components/shop/GoalInput";
 import { Pill } from "../components/shared/Pill";
 import { SpendMeter } from "../components/layout/SpendMeter";
-import { runAgentStream, selectOptionStream, approveSession } from "../lib/api";
+import { runAgentStream, selectOptionStream, approveSession, listRuns, deleteRun } from "../lib/api";
 import { PipelineStageState, OrchestratorResult, SessionOutcome } from "../lib/types";
 import {
   loadCarts,
@@ -115,6 +115,33 @@ function verdictForStepper(state: SessionOutcome): "approved" | "refused" | "nee
   return null;
 }
 
+/** Build a completed CartSession from a real OrchestratorResult — the single
+ * source for both a finished live run and a run rehydrated from the DB, so both
+ * render identically. */
+function cartFromResult(
+  id: string,
+  goal: string,
+  timestamp: string,
+  result: OrchestratorResult,
+): CartSession {
+  const stages = stagesForState(result.state);
+  const resolved = stages.filter((s) => s.status !== "idle").length;
+  return {
+    id,
+    cartId: result.cart_id ?? "",
+    goal,
+    title: titleForResult(result, goal),
+    timestamp,
+    stages,
+    currentStepIndex: resolved,
+    isComplete: true,
+    result,
+    amountPaise: result.amount_paise ?? result.cart?.total_paise ?? 0,
+    declined: false,
+    error: null,
+  };
+}
+
 /** A readable cart title from the real result, never a keyword guess. */
 function titleForResult(result: OrchestratorResult, goal: string): string {
   const li = result.cart?.line_items?.[0]?.title;
@@ -141,14 +168,38 @@ export const ShopPage: React.FC = () => {
   const selectedCart = carts.find((c) => c.id === selectedCartId) || null;
   const sessionId = activeMandate?.session_id || null;
 
-  // Rehydrate this mandate's persisted run-history whenever the bound mandate
-  // changes (including the first async load and every tab remount).
+  // Rehydrate this mandate's run history whenever the bound mandate changes
+  // (including the first async load and every tab remount). Two steps:
+  //  1. Paint instantly from the localStorage cache (no network wait).
+  //  2. Reconcile against the DB — the source of truth — merging by run_id so
+  //     the durable server history wins on conflicts while any cache-only cards
+  //     (e.g. an in-flight run, or history from before this feature) are kept.
   useEffect(() => {
-    const loaded = loadCarts(mandateId);
-    setCarts(loaded);
+    let cancelled = false;
+    const cached = loadCarts(mandateId);
+    setCarts(cached);
     const savedSel = loadSelectedCartId(mandateId);
-    setSelectedCartId(savedSel && loaded.some((c) => c.id === savedSel) ? savedSel : null);
+    setSelectedCartId(savedSel && cached.some((c) => c.id === savedSel) ? savedSel : null);
     setHydratedMandate(mandateId);
+
+    if (mandateId) {
+      listRuns(mandateId)
+        .then((runs) => {
+          if (cancelled) return;
+          const byId = new Map(cached.map((c) => [c.id, c]));
+          for (const r of runs) byId.set(r.run_id, cartFromResult(r.run_id, r.goal, r.created_at, r.result));
+          const merged = [...byId.values()].sort(
+            (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp),
+          );
+          setCarts(merged);
+        })
+        .catch(() => {
+          /* backend unreachable — keep the cached view, never wipe it */
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
   }, [mandateId]);
 
   // Persist carts + selection — but only after hydration for THIS mandate.
@@ -205,13 +256,17 @@ export const ShopPage: React.FC = () => {
       if (selectedCartId === id) setSelectedCartId(remaining[0]?.id ?? null);
       return remaining;
     });
+    // Also remove it from the durable server history (best-effort) so it doesn't
+    // reappear on the next load. A cache-only card (never recorded) simply isn't
+    // found server-side, which is fine.
+    if (mandateId) deleteRun(mandateId, id).catch(() => {});
   };
 
   const handleSendGoal = async (goal: string) => {
     if (!activeMandate || !sessionId) return;
     setLoading(true);
 
-    const internalId = `run_${Date.now()}`;
+    const internalId = `run_${crypto.randomUUID()}`;
     const pending: CartSession = {
       id: internalId,
       cartId: "",
@@ -228,8 +283,11 @@ export const ShopPage: React.FC = () => {
     setSelectedCartId(internalId);
 
     try {
-      const result = await runAgentStream(sessionId, goal, (evt) =>
-        applyStageEvent(internalId, evt.id, evt.status),
+      const result = await runAgentStream(
+        sessionId,
+        goal,
+        (evt) => applyStageEvent(internalId, evt.id, evt.status),
+        internalId,
       );
       applyResult(internalId, goal, result);
       await refreshMandates();
@@ -252,8 +310,12 @@ export const ShopPage: React.FC = () => {
     const goal = selectedCart.goal;
     patchCart(cartId, { stages: PENDING_STAGES, isComplete: false, title: "Composing selection…" });
     try {
-      const result = await selectOptionStream(sessionId, itemId, (evt) =>
-        applyStageEvent(cartId, evt.id, evt.status),
+      const result = await selectOptionStream(
+        sessionId,
+        itemId,
+        (evt) => applyStageEvent(cartId, evt.id, evt.status),
+        cartId,
+        goal,
       );
       applyResult(cartId, goal, result);
       await refreshMandates();
@@ -269,7 +331,12 @@ export const ShopPage: React.FC = () => {
     setApproving(true);
     const goal = selectedCart.goal;
     try {
-      const result = await approveSession(sessionId, selectedCart.result.cart_id);
+      const result = await approveSession(
+        sessionId,
+        selectedCart.result.cart_id,
+        selectedCart.id,
+        goal,
+      );
       applyResult(selectedCart.id, goal, result);
       await refreshMandates();
     } catch (err: any) {

@@ -10,6 +10,7 @@ import { GATEWAY_URL, AGENT_URL } from "./config";
 import { authFetch } from "./token";
 import {
   Mandate,
+  AgentRun,
   AuditChain,
   OrchestratorResult,
   SessionView,
@@ -87,6 +88,26 @@ export async function revokeMandate(mandateId: string): Promise<void> {
     method: "POST",
   });
   await asJson(res, "revokeMandate");
+}
+
+// ---- run history (durable console carts, DB-backed) ----------------------
+
+/** A mandate's agent runs, newest-first — the console's source of truth. Each
+ * carries the full OrchestratorResult so cards rebuild faithfully across
+ * devices and cache clears. */
+export async function listRuns(mandateId: string): Promise<AgentRun[]> {
+  const res = await authFetch(`${GATEWAY_URL}/mandates/${encodeURIComponent(mandateId)}/runs`);
+  const data = await asJson(res, "listRuns");
+  return Array.isArray(data) ? (data as AgentRun[]) : [];
+}
+
+/** Permanently delete one run from the durable history. */
+export async function deleteRun(mandateId: string, runId: string): Promise<void> {
+  const res = await authFetch(
+    `${GATEWAY_URL}/mandates/${encodeURIComponent(mandateId)}/runs/${encodeURIComponent(runId)}`,
+    { method: "DELETE" },
+  );
+  await asJson(res, "deleteRun");
 }
 
 // ---- sessions ------------------------------------------------------------
@@ -189,30 +210,50 @@ async function streamOrchestrate(
   return consumeOrchestratorStream(res.body, onStage, what);
 }
 
-export function runAgentStream(sessionId: string, goal: string, onStage: OnStage): Promise<OrchestratorResult> {
+// `runId` is a stable client idempotency key threaded through a run's
+// run→select→approve steps, so the backend logs them all under one `agent_run`
+// row. `goal` is passed on every step so the durable log keeps the human's
+// words even on steps that don't restate them.
+export function runAgentStream(
+  sessionId: string,
+  goal: string,
+  onStage: OnStage,
+  runId?: string,
+): Promise<OrchestratorResult> {
   return streamOrchestrate(
     `${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/run/stream`,
-    { goal },
+    { goal, run_id: runId },
     onStage,
     "runAgent",
   );
 }
 
-export function selectOptionStream(sessionId: string, itemId: string, onStage: OnStage): Promise<OrchestratorResult> {
+export function selectOptionStream(
+  sessionId: string,
+  itemId: string,
+  onStage: OnStage,
+  runId?: string,
+  goal?: string,
+): Promise<OrchestratorResult> {
   return streamOrchestrate(
     `${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/select/stream`,
-    { item_id: itemId },
+    { item_id: itemId, run_id: runId, goal },
     onStage,
     "selectOption",
   );
 }
 
 /** Resume a NEEDS_HUMAN session with the human's approval. */
-export async function approveSession(sessionId: string, cartId: string): Promise<OrchestratorResult> {
+export async function approveSession(
+  sessionId: string,
+  cartId: string,
+  runId?: string,
+  goal?: string,
+): Promise<OrchestratorResult> {
   const res = await authFetch(`${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cart_id: cartId }),
+    body: JSON.stringify({ cart_id: cartId, run_id: runId, goal }),
   });
   return asJson(res, "approveSession");
 }

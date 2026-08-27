@@ -333,6 +333,73 @@ pub async fn list_mandates(
         .collect())
 }
 
+/// One row of the console run history (`agent_run`) — a single agent run
+/// against a mandate, with its full result snapshot for a faithful UI rebuild.
+pub struct RunRow {
+    pub run_id: String,
+    pub session_id: Uuid,
+    pub goal: String,
+    pub state: String,
+    pub verdict: Option<String>,
+    pub rule_cited: Option<String>,
+    pub cart_id: Option<String>,
+    pub total_paise: Paise,
+    pub message: Option<String>,
+    pub payment_link: Option<String>,
+    pub result_json: Value,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+/// List a mandate's agent runs newest-first — the shopping console's durable,
+/// cross-device run history (source of truth; localStorage is only a cache).
+pub async fn list_runs(pool: &Db, mandate_id: Uuid, limit: i64) -> Result<Vec<RunRow>, AppError> {
+    let rows = sqlx::query!(
+        "SELECT run_id, session_id, goal, state, verdict, rule_cited, cart_id,
+                total_paise, message, payment_link, result_json, created_at, updated_at
+         FROM agent_run WHERE mandate_id = $1 ORDER BY created_at DESC LIMIT $2",
+        mandate_id,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| RunRow {
+            run_id: r.run_id,
+            session_id: r.session_id,
+            goal: r.goal,
+            state: r.state,
+            verdict: r.verdict,
+            rule_cited: r.rule_cited,
+            cart_id: r.cart_id,
+            total_paise: r.total_paise,
+            message: r.message,
+            payment_link: r.payment_link,
+            result_json: r.result_json,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect())
+}
+
+/// Delete one run from a mandate's history. Scoped by mandate_id so a caller
+/// can only remove runs under a mandate they were already authorized for.
+/// Returns whether a row was actually removed.
+pub async fn delete_run(pool: &Db, mandate_id: Uuid, run_id: &str) -> Result<bool, AppError> {
+    let r = sqlx::query!(
+        "DELETE FROM agent_run WHERE mandate_id = $1 AND run_id = $2",
+        mandate_id,
+        run_id,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(r.rows_affected() > 0)
+}
+
 /// A session's state joined with its mandate's bounds — the shape the shop
 /// page polls to show a live spend meter alongside the session state.
 pub struct SessionSummaryRow {

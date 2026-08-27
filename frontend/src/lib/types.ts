@@ -82,6 +82,25 @@ export interface OrchestratorResult {
   amount_paise?: number;
 }
 
+/** One durable run from the console history (GET /mandates/{id}/runs). `result`
+ * is the full OrchestratorResult snapshot the backend produced, so the console
+ * rebuilds each card faithfully from the DB — not from per-browser storage. */
+export interface AgentRun {
+  run_id: string;
+  session_id: string;
+  goal: string;
+  state: SessionOutcome;
+  verdict: Verdict | null;
+  rule_cited: string | null;
+  cart_id: string | null;
+  total_paise: number;
+  message: string | null;
+  payment_link: string | null;
+  result: OrchestratorResult;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Live session view from GET /sessions/{id} (gateway). */
 export interface SessionView {
   session_id: string;

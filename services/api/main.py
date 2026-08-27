@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import uuid
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -77,16 +78,27 @@ def _orchestrator() -> Orchestrator:
     )
 
 
+# Every request carries an optional `run_id` (a client-supplied idempotency key,
+# stable across a run's run→select→approve steps) so the terminal result is
+# logged to the `agent_run` console-history table under one stable id. `goal` on
+# select/approve is the ORIGINAL goal, so the log keeps the human's words even
+# on the steps that don't restate them. Both are optional: a caller that omits
+# run_id (e.g. the CLI) still runs, we just mint an id and log it once.
 class RunRequest(BaseModel):
     goal: str
+    run_id: str | None = None
 
 
 class ApproveRequest(BaseModel):
     cart_id: str
+    run_id: str | None = None
+    goal: str | None = None
 
 
 class SelectRequest(BaseModel):
     item_id: str
+    run_id: str | None = None
+    goal: str | None = None
 
 
 def _hash_token(raw: str) -> str:
@@ -134,7 +146,21 @@ def _result_json(orch: Orchestrator, result, trace_id: str | None) -> dict:
     }
 
 
-def _sse_response(session_id: str, span_name: str, work):
+def _record_run(session_id: str, run_id: str | None, goal: str | None, rj: dict) -> None:
+    """Log the terminal result to the console-history table. Best-effort: a
+    logging failure must NEVER break the user's actual run, so any error is
+    swallowed with a warning. `goal` falls back to the mandate's nl_goal when a
+    step didn't restate it; `run_id` is minted when absent so every API run is
+    still logged exactly once."""
+    try:
+        rid = run_id or f"run_{uuid.uuid4()}"
+        text = goal or rj.get("message") or "(run)"
+        _state["db"].record_run(rid, session_id, text, rj)
+    except Exception:  # noqa: BLE001
+        logger.warning("record_run failed for session %s (non-fatal)", session_id, exc_info=True)
+
+
+def _sse_response(session_id: str, span_name: str, work, record=None):
     """Stream genuine pipeline-stage events over SSE while `work(orch, on_stage)`
     runs the (blocking) orchestrator in a worker thread. Each real stage
     start/finish is forwarded as `data: {"type":"stage",...}`; the terminal
@@ -159,7 +185,10 @@ def _sse_response(session_id: str, span_name: str, work):
                     span.set_attribute("session_id", session_id)
                     result = work(orch, on_stage)
                     trace_id = format(span.get_span_context().trace_id, "032x")
-                payload = {"type": "result", "result": _result_json(orch, result, trace_id)}
+                rj = _result_json(orch, result, trace_id)
+                if record is not None:
+                    record(rj)
+                payload = {"type": "result", "result": rj}
             except LookupError as e:
                 payload = {"type": "error", "detail": str(e)}
             except Exception as e:  # noqa: BLE001
@@ -196,7 +225,12 @@ def run_session_stream(session_id: str, req: RunRequest, authorization: str | No
     final OrchestratorResult. Same auth + ownership rules as /run."""
     owner_hash = _authenticate(authorization)
     _require_session_owner(session_id, owner_hash)
-    return _sse_response(session_id, "purchase", lambda orch, on: orch.run(session_id, req.goal, on_stage=on))
+    return _sse_response(
+        session_id,
+        "purchase",
+        lambda orch, on: orch.run(session_id, req.goal, on_stage=on),
+        record=lambda rj: _record_run(session_id, req.run_id, req.goal, rj),
+    )
 
 
 @app.post("/sessions/{session_id}/select/stream")
@@ -204,7 +238,12 @@ def select_stream(session_id: str, req: SelectRequest, authorization: str | None
     """SSE variant of /select — streams real stage progress, then the result."""
     owner_hash = _authenticate(authorization)
     _require_session_owner(session_id, owner_hash)
-    return _sse_response(session_id, "select", lambda orch, on: orch.select(session_id, req.item_id, on_stage=on))
+    return _sse_response(
+        session_id,
+        "select",
+        lambda orch, on: orch.select(session_id, req.item_id, on_stage=on),
+        record=lambda rj: _record_run(session_id, req.run_id, req.goal, rj),
+    )
 
 
 @app.post("/sessions/{session_id}/run")
@@ -229,7 +268,9 @@ def run_session(session_id: str, req: RunRequest, authorization: str | None = He
     except Exception as e:  # noqa: BLE001
         logger.exception("agent run failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
-    return _result_json(orch, result, trace_id)
+    rj = _result_json(orch, result, trace_id)
+    _record_run(session_id, req.run_id, req.goal, rj)
+    return rj
 
 
 @app.post("/sessions/{session_id}/select")
@@ -254,7 +295,9 @@ def select_option(session_id: str, req: SelectRequest, authorization: str | None
     except Exception as e:  # noqa: BLE001
         logger.exception("agent select failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
-    return _result_json(orch, result, trace_id)
+    rj = _result_json(orch, result, trace_id)
+    _record_run(session_id, req.run_id, req.goal, rj)
+    return rj
 
 
 @app.post("/sessions/{session_id}/approve")
@@ -279,4 +322,6 @@ def approve_session(session_id: str, req: ApproveRequest, authorization: str | N
     except Exception as e:  # noqa: BLE001
         logger.exception("agent approve failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
-    return _result_json(orch, result, trace_id)
+    rj = _result_json(orch, result, trace_id)
+    _record_run(session_id, req.run_id, req.goal, rj)
+    return rj

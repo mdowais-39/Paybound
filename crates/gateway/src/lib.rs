@@ -6,7 +6,7 @@ use axum::{
     body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use domain::{AuditEventType, IntentMandate};
@@ -93,6 +93,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/sessions/{session_id}/audit", get(audit_chain))
         .route("/sessions/{session_id}", get(get_session))
         .route("/mandates", post(create_mandate).get(list_mandates))
+        .route("/mandates/{mandate_id}/runs", get(list_runs))
+        .route("/mandates/{mandate_id}/runs/{run_id}", delete(delete_run))
         .route("/mandates/{mandate_id}/revoke", post(revoke_mandate))
         .route("/catalog/categories", get(list_categories))
         .route("/identity", post(create_identity))
@@ -399,6 +401,77 @@ async fn list_mandates(
         })
         .collect();
     Ok(Json(json!(out)))
+}
+
+/// List a mandate's agent runs newest-first — the shopping console's durable,
+/// cross-device run history. Owner-scoped exactly like revoke: a mandate with
+/// an owner is only visible to that owner. Each row carries the full result
+/// snapshot so the console rebuilds its cards faithfully from the DB.
+#[tracing::instrument(name = "list_runs", level = "info", skip(s))]
+async fn list_runs(
+    State(s): State<AppState>,
+    Path(mandate_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    let owner = repos::get_mandate_owner(&s.pool, mandate_id)
+        .await
+        .map_err(|e| match e {
+            common::AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            other => internal(other),
+        })?;
+    if matches!(&owner, Some(h) if h != &owner_hash) {
+        return Err(forbidden("not your mandate"));
+    }
+    let rows = repos::list_runs(&s.pool, mandate_id, 200)
+        .await
+        .map_err(internal)?;
+    let out: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "run_id": r.run_id,
+                "session_id": r.session_id,
+                "goal": r.goal,
+                "state": r.state,
+                "verdict": r.verdict,
+                "rule_cited": r.rule_cited,
+                "cart_id": r.cart_id,
+                "total_paise": r.total_paise,
+                "message": r.message,
+                "payment_link": r.payment_link,
+                "result": r.result_json,
+                "created_at": r.created_at.format(&Rfc3339).unwrap_or_default(),
+                "updated_at": r.updated_at.format(&Rfc3339).unwrap_or_default(),
+            })
+        })
+        .collect();
+    Ok(Json(json!(out)))
+}
+
+/// Permanently delete one run from a mandate's console history. Owner-scoped
+/// like the other mandate routes; scoping the delete by mandate_id too means an
+/// authorized caller can only ever remove a run under their own mandate.
+#[tracing::instrument(name = "delete_run", level = "info", skip(s))]
+async fn delete_run(
+    State(s): State<AppState>,
+    Path((mandate_id, run_id)): Path<(Uuid, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    let owner = repos::get_mandate_owner(&s.pool, mandate_id)
+        .await
+        .map_err(|e| match e {
+            common::AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            other => internal(other),
+        })?;
+    if matches!(&owner, Some(h) if h != &owner_hash) {
+        return Err(forbidden("not your mandate"));
+    }
+    let deleted = repos::delete_run(&s.pool, mandate_id, &run_id)
+        .await
+        .map_err(internal)?;
+    Ok(Json(json!({ "run_id": run_id, "deleted": deleted })))
 }
 
 /// A session's live state + spend + its mandate's bounds + its latest cart —
