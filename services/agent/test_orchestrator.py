@@ -32,10 +32,16 @@ class FakeMcp:
     def __init__(self, checkout_result: dict, search_items: list[dict] | None = None):
         self.checkout_result = checkout_result
         self.calls: list[str] = []
-        self.search_items = search_items or [
-            {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
-             "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
-        ]
+        # `is None` (not `or`) so an explicit empty list stays empty — the
+        # "nothing in the catalog" case.
+        self.search_items = (
+            [
+                {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+                 "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
+            ]
+            if search_items is None
+            else search_items
+        )
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         self.calls.append(name)
@@ -236,6 +242,44 @@ def test_select_rejects_item_outside_allowed_merchant():
     assert result.state == "REFUSED"
     assert result.rule_cited == "merchant_not_allowed"
     assert "checkout" not in mcp.calls
+
+
+def test_no_match_says_nothing_in_catalog():
+    mcp = FakeMcp({"verdict": "approved"}, search_items=[])
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))
+    intent = Intent(query="a unicorn", category=None)
+
+    result = orch.run("s1", "buy a unicorn", parsed_intent=intent)
+    assert result.state == "CLARIFY"
+    assert "couldn't find anything matching" in result.message
+    assert "a unicorn" in result.message
+
+
+def test_no_match_over_price_explains_the_price_ceiling():
+    expensive = [{"item_id": "e1", "merchant_id": "m", "title": "Premium Shoe",
+                  "category": "footwear", "price_paise": 900000}]
+    mcp = FakeMcp({"verdict": "approved"}, search_items=expensive)
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))
+    intent = Intent(query="shoes", max_price_paise=300000, category="footwear")
+
+    result = orch.run("s1", "buy shoes under 3000", parsed_intent=intent)
+    assert result.state == "CLARIFY"
+    assert "cost more than ₹3,000" in result.message
+    assert "cheapest is ₹9,000" in result.message
+
+
+def test_no_match_out_of_category_explains_the_mandate_restriction():
+    off_cat = [{"item_id": "k1", "merchant_id": "m", "title": "Espresso Machine",
+                "category": "kitchen", "price_paise": 400000}]
+    mcp = FakeMcp({"verdict": "approved"}, search_items=off_cat)
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))  # mandate allows only "footwear"
+    intent = Intent(query="coffee maker", category="kitchen")
+
+    result = orch.run("s1", "buy a coffee maker", parsed_intent=intent)
+    assert result.state == "CLARIFY"
+    assert "categories this mandate doesn't cover" in result.message
+    assert "kitchen" in result.message  # what the query matched
+    assert "footwear" in result.message  # what the mandate allows
 
 
 def test_low_confidence_routes_to_needs_human_citing_the_scorer():

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from .base_agent import BaseAgent
 from .db import Db
 from .llm import LLM
-from .models import Candidate, Intent, OrchestratorResult
+from .models import Candidate, Intent, OrchestratorResult, SearchOutcome
 from .precheck import run_prechecks
 from .workers.cart_composer import CartComposer
 from .workers.clarification import ClarificationWorker
@@ -118,14 +118,15 @@ class Orchestrator(BaseAgent):
 
         # 4. Shop — bounded to the mandate's allowed category + merchant.
         emit("searching", "active")
-        candidates = self.discovery.search(
+        outcome = self.discovery.search(
             intent,
             allowed_categories=mandate.get("allowed_categories"),
             allowed_merchants=mandate.get("allowed_merchants"),
         )
+        candidates = outcome.candidates
         if not candidates:
             emit("searching", "success")
-            q = "I couldn't find items matching that within your limits — want to adjust the budget or category?"
+            q = self._no_match_message(intent, outcome, mandate)
             return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
         emit("searching", "success")
 
@@ -297,6 +298,46 @@ class Orchestrator(BaseAgent):
             verdict=verdict,
             rule_cited=res.get("rule_cited"),
             cart_id=cart_id,
+        )
+
+    @staticmethod
+    def _rupees(paise: int | None) -> str:
+        return f"₹{(paise or 0) // 100:,}"
+
+    def _no_match_message(self, intent: Intent, outcome: SearchOutcome, mandate: dict) -> str:
+        """Turn 'search came up empty' into a specific, actionable sentence so
+        the customer understands *why* — a genuine no-match, a price ceiling, or
+        a mandate restriction — rather than a vague 'couldn't find anything'."""
+        q = intent.query
+        reason = outcome.reason
+        if reason == "price":
+            cap = self._rupees(outcome.detail.get("cap_paise"))
+            cheapest = self._rupees(outcome.detail.get("cheapest_paise"))
+            return (
+                f'I found matches for "{q}", but they all cost more than {cap} — '
+                f"the cheapest is {cheapest}. Raise the price limit (or the mandate's "
+                f"per-item cap) to include it."
+            )
+        if reason == "category":
+            allowed = mandate.get("allowed_categories") or []
+            matched = outcome.detail.get("matched") or []
+            allowed_str = ", ".join(allowed[:6]) if allowed else "none"
+            matched_str = ", ".join(matched) if matched else "other categories"
+            return (
+                f'"{q}" matches products in categories this mandate doesn\'t cover '
+                f"({matched_str}). This mandate is limited to: {allowed_str}. "
+                f"Create a mandate without a category restriction to shop the whole catalog."
+            )
+        if reason == "merchant":
+            return (
+                f'"{q}" matches products, but only from merchants this mandate '
+                f"doesn't allow. Create a mandate for the whole marketplace (no specific "
+                f"merchant) to include them."
+            )
+        # no_match (or unknown): genuinely nothing resembles the query.
+        return (
+            f'I couldn\'t find anything matching "{q}" in the catalog. '
+            f"Try a different product or a broader term."
         )
 
     def _parse_intent(self, goal: str, mandate: dict) -> Intent:

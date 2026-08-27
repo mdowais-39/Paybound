@@ -5,7 +5,7 @@ out. The trained relevance model swaps in behind `_rank` at Phase 7."""
 from __future__ import annotations
 
 from ..base_agent import BaseAgent
-from ..models import Candidate, Intent
+from ..models import Candidate, Intent, SearchOutcome
 
 
 class DiscoveryWorker(BaseAgent):
@@ -20,9 +20,11 @@ class DiscoveryWorker(BaseAgent):
         allowed_categories: list[str] | None = None,
         allowed_merchants: list[str] | None = None,
         limit: int = 20,
-    ) -> list[Candidate]:
-        """Search, then keep only items the mandate actually allows (a bounded
-        shopper proposes only buyable items — the kernel is still the gate)."""
+    ) -> SearchOutcome:
+        """Search, keep only items the mandate allows and the customer can
+        afford, and rank them. When nothing survives, report WHICH filter
+        emptied the pool (no catalog match / price / category / merchant) so
+        the customer gets a specific explanation, not a vague miss."""
         args: dict = {"query": intent.query, "limit": limit}
         # When the trained ranker is present, embed the query with the SAME
         # MiniLM model whose embeddings sit in the catalog, so the storefront
@@ -35,32 +37,48 @@ class DiscoveryWorker(BaseAgent):
             except Exception:  # noqa: BLE001
                 pass
         result = self.call_tool("search_catalog", args)
+        raw = result.get("items", [])
+        if not raw:
+            return SearchOutcome([], reason="no_match")
+
         cats = set(allowed_categories or [])
         merchants = set(allowed_merchants or [])
-        candidates = []
-        for it in result.get("items", []):
-            if cats and it["category"] not in cats:
-                continue
-            if merchants and it.get("merchant_id") not in merchants:
-                continue
-            candidates.append(
-                Candidate(
-                    item_id=it["item_id"],
-                    title=it["title"],
-                    category=it["category"],
-                    price_paise=it["price_paise"],
-                    merchant_id=it.get("merchant_id"),
-                )
-            )
-        return self._rank(candidates, intent)
+        matched_categories = {it["category"] for it in raw}
 
-    def _rank(self, candidates: list[Candidate], intent: Intent) -> list[Candidate]:
-        """Keep items within budget, then rank by the ESCI-trained relevance
-        model when available (falling back to a cheap heuristic)."""
+        in_scope = [
+            Candidate(
+                item_id=it["item_id"],
+                title=it["title"],
+                category=it["category"],
+                price_paise=it["price_paise"],
+                merchant_id=it.get("merchant_id"),
+            )
+            for it in raw
+            if (not cats or it["category"] in cats)
+            and (not merchants or it.get("merchant_id") in merchants)
+        ]
+        if not in_scope:
+            # The scope filters removed everything — say which axis, preferring
+            # category (the more common, more legible restriction).
+            if cats and not (matched_categories & cats):
+                return SearchOutcome(
+                    [], reason="category", detail={"matched": sorted(matched_categories)[:5]}
+                )
+            return SearchOutcome([], reason="merchant")
+
         cap = intent.max_price_paise
-        affordable = [c for c in candidates if cap is None or c.price_paise <= cap]
+        affordable = [c for c in in_scope if cap is None or c.price_paise <= cap]
         if not affordable:
-            return []
+            return SearchOutcome(
+                [],
+                reason="price",
+                detail={"cap_paise": cap, "cheapest_paise": min(c.price_paise for c in in_scope)},
+            )
+        return SearchOutcome(self._rank(affordable, intent))
+
+    def _rank(self, affordable: list[Candidate], intent: Intent) -> list[Candidate]:
+        """Rank the already-affordable, in-scope candidates by the ESCI-trained
+        relevance model when available (heuristic fallback otherwise)."""
         if self.relevance is not None:
             rows = [{"title": c.title, "_c": c} for c in affordable]
             ranked = self.relevance.rank(intent.query, rows, title_key="title")

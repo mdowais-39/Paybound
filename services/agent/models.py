@@ -29,6 +29,22 @@ class Candidate:
 
 
 @dataclass
+class SearchOutcome:
+    """What discovery found — and, when it found nothing usable, precisely why,
+    so the orchestrator can explain the specific reason instead of a vague
+    'couldn't find anything'."""
+
+    candidates: list[Candidate]
+    #: None when candidates is non-empty; otherwise one of:
+    #: "no_match"  — nothing in the catalog resembles the query
+    #: "price"     — matches exist but all cost more than the stated price limit
+    #: "category"  — matches exist but only in categories the mandate disallows
+    #: "merchant"  — matches exist but only from merchants the mandate disallows
+    reason: str | None = None
+    detail: dict = field(default_factory=dict)
+
+
+@dataclass
 class ComposedCart:
     cart_id: str
     total_paise: int
