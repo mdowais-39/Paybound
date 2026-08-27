@@ -44,16 +44,24 @@ export const ChoicePicker: React.FC<ChoicePickerProps> = ({
             type="button"
             disabled={disabled}
             onClick={() => onSelect(o.item_id)}
-            className="py-3 flex items-center justify-between gap-4 text-left group hover:bg-[#F9FAFB] -mx-2 px-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            className="py-3.5 flex items-start justify-between gap-4 text-left group hover:bg-[#F9FAFB] -mx-2 px-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-[#111827] truncate">{o.title}</p>
-              <p className="text-[11px] text-[#6B7280] font-mono truncate">
-                {o.category} · {o.item_id}
+            <div className="min-w-0 flex-1">
+              {/* Full title, wrapping up to 2 lines instead of cutting off — the
+                  whole point of choosing is seeing what you're choosing between. */}
+              <p className="text-sm font-semibold text-[#111827] leading-snug line-clamp-2">
+                {o.title}
+              </p>
+              <p className="text-[11px] text-[#6B7280] mt-1 flex items-center gap-1.5">
+                <span className="font-medium text-[#4B5563]">{o.category}</span>
+                <span className="text-[#D1D5DB]">·</span>
+                <span className="font-mono text-[10px] text-[#9CA3AF] truncate">
+                  {o.item_id.slice(0, 8)}
+                </span>
               </p>
             </div>
-            <div className="flex items-center gap-3 shrink-0">
-              <span className="font-mono font-bold text-[#111827] tabular-nums">
+            <div className="flex flex-col items-end gap-1 shrink-0 pt-0.5">
+              <span className="font-mono font-bold text-[#111827] tabular-nums whitespace-nowrap">
                 {paiseToRupees(o.price_paise)}
               </span>
               <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#2563EB] opacity-0 group-hover:opacity-100 transition-opacity">

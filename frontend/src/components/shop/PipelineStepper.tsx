@@ -141,8 +141,8 @@ export const PipelineStepper: React.FC<PipelineStepperProps> = ({
       </div>
 
       {/* Interactive Dot-Grid Canvas with Connected Progress Nodes */}
-      <div className="relative w-full rounded-xl bg-[#F8FAFC] bg-[radial-gradient(#CBD5E1_1.2px,transparent_1.2px)] [background-size:18px_18px] border border-[#E2E8F0] p-5 sm:p-6 overflow-x-auto scrollbar-thin">
-        <div className="flex items-center min-w-max py-2 px-1">
+      <div className="relative w-full rounded-xl bg-[#F8FAFC] bg-[radial-gradient(#CBD5E1_1.2px,transparent_1.2px)] [background-size:14px_14px] border border-[#E2E8F0] p-3 sm:p-4 overflow-x-auto scrollbar-thin">
+        <div className="flex items-center min-w-max py-1.5 px-1">
           {stages.map((stage, idx) => {
             const config = STAGE_CONFIGS[stage.id] || {
               id: stage.id,
@@ -190,62 +190,63 @@ export const PipelineStepper: React.FC<PipelineStepperProps> = ({
                 {/* Node Card Component */}
                 <div
                   id={`pipeline-node-${stage.id}`}
-                  className={`w-[215px] h-[98px] rounded-2xl ${cardBg} border ${cardBorder} shadow-xs p-3.5 flex flex-col justify-between relative shrink-0 transition-all duration-200 group`}
+                  title={`${config.title} — ${config.subtitle}`}
+                  className={`w-[132px] h-[72px] rounded-xl ${cardBg} border ${cardBorder} shadow-xs p-2 flex flex-col justify-between relative shrink-0 transition-all duration-200 group`}
                 >
                   {/* Left Connection Port Dot */}
                   <span
-                    className={`absolute -left-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white ${portColor} shadow-2xs z-20 transition-colors`}
+                    className={`absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full border-2 border-white ${portColor} shadow-2xs z-20 transition-colors`}
                   />
 
                   {/* Right Connection Port Dot */}
                   <span
-                    className={`absolute -right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white ${portColor} shadow-2xs z-20 transition-colors`}
+                    className={`absolute -right-1 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full border-2 border-white ${portColor} shadow-2xs z-20 transition-colors`}
                   />
 
                   {/* Card Header (Icon + Title + Subtitle) */}
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-1.5">
                     <div
-                      className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${config.iconBg} ${config.iconColor}`}
+                      className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 shadow-2xs ${config.iconBg} ${config.iconColor}`}
                     >
-                      <Icon className="w-4 h-4 stroke-[2.2]" />
+                      <Icon className="w-3 h-3 stroke-[2.2]" />
                     </div>
 
                     <div className="min-w-0 flex-1">
-                      <h4 className="text-xs font-bold text-[#0F172A] truncate">
+                      <h4 className="text-[10.5px] leading-tight font-bold text-[#0F172A] truncate">
                         {config.title}
                       </h4>
-                      <p className="text-[11px] text-[#64748B] truncate mt-0.5">
+                      <p className="text-[9px] leading-tight text-[#64748B] truncate mt-0.5">
                         {config.subtitle}
                       </p>
                     </div>
                   </div>
 
                   {/* Card Footer (Category Tag + Status Label) */}
-                  <div className="flex items-center justify-between pt-2 border-t border-[#F1F5F9] text-[10px] font-mono">
-                    <span className="font-bold text-[#94A3B8] uppercase tracking-wider">
+                  <div className="flex items-center justify-between pt-1 border-t border-[#F1F5F9] text-[8.5px] font-mono">
+                    <span className="font-bold text-[#94A3B8] uppercase tracking-wider truncate">
                       {config.category}
                     </span>
 
                     {/* Status Pill / Text */}
                     {isPassed ? (
-                      <span className="text-[#059669] font-bold flex items-center gap-1">
-                        <Check className="w-3 h-3 stroke-[3]" />
+                      <span className="text-[#059669] font-bold flex items-center gap-0.5 shrink-0">
+                        <Check className="w-2.5 h-2.5 stroke-[3]" />
                         <span>Done</span>
                       </span>
                     ) : isActive ? (
-                      <span className="text-[#2563EB] font-bold flex items-center gap-1 animate-pulse">
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                        <span>Running</span>
+                      <span className="text-[#2563EB] font-bold flex items-center gap-0.5 animate-pulse shrink-0">
+                        <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                        <span>Live</span>
                       </span>
                     ) : isFailed ? (
-                      <span className="text-[#D97706] font-bold flex items-center gap-1">
-                        <AlertCircle className="w-3 h-3" />
+                      <span className="text-[#D97706] font-bold flex items-center gap-0.5 shrink-0">
+                        <AlertCircle className="w-2.5 h-2.5" />
                         <span>Refused</span>
                       </span>
                     ) : isNeedsHuman ? (
-                      <span className="text-[#7C3AED] font-bold flex items-center gap-1">
-                        <Shield className="w-3 h-3" />
-                        <span>Needs AFA</span>
+                      <span className="text-[#7C3AED] font-bold flex items-center gap-0.5 shrink-0">
+                        <Shield className="w-2.5 h-2.5" />
+                        <span>AFA</span>
                       </span>
                     ) : (
                       <span className="text-[#94A3B8] font-medium">Idle</span>
@@ -255,7 +256,7 @@ export const PipelineStepper: React.FC<PipelineStepperProps> = ({
 
                 {/* Connecting Wire & Junction between nodes */}
                 {!isLast && (
-                  <div className="w-7 sm:w-9 h-[2px] bg-[#CBD5E1] shrink-0 relative flex items-center justify-center">
+                  <div className="w-4 sm:w-5 h-[2px] bg-[#CBD5E1] shrink-0 relative flex items-center justify-center">
                     {/* Pulsing travel signal when active */}
                     {isPassed && (
                       <div className="absolute inset-0 bg-[#10B981] transition-all" />
