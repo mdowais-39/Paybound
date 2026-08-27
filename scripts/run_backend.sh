@@ -21,6 +21,24 @@ STOREFRONT_PORT="${STOREFRONT_PORT:-8081}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 AGENT_API_PORT="${AGENT_API_PORT:-8092}"
 
+# Self-healing: a prior run (crashed terminal, closed window, killed the
+# wrong process) can leave a stale process still bound to one of our ports.
+# When that happens the NEW instance's binaries fail to bind, exit
+# immediately, and `wait` at the bottom returns right away — which looks
+# exactly like "the backend started then instantly stopped". Clear each port
+# first so that can't happen.
+free_port() {
+  local port="$1"
+  local pid
+  pid=$(netstat -ano 2>/dev/null | grep ":$port " | grep LISTENING | awk '{print $NF}' | sort -u | head -1)
+  if [ -n "${pid:-}" ]; then
+    echo "==> port $port was held by stale pid $pid — freeing it"
+    taskkill //F //PID "$pid" >/dev/null 2>&1 || true
+    sleep 1
+  fi
+}
+for p in "$STOREFRONT_PORT" "$GATEWAY_PORT" "$AGENT_API_PORT"; do free_port "$p"; done
+
 echo "==> building storefront-mcp + gateway ..."
 cargo build -q -p storefront-mcp -p gateway
 
@@ -32,6 +50,21 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+
+# Wait for a service's /health, failing loudly (with its log) instead of
+# silently continuing — so a real startup failure is never mistaken for
+# "it's up" just because the banner printed.
+await_health() {
+  local name="$1" port="$2" tries="$3" log="$4"
+  for _ in $(seq 1 "$tries"); do
+    curl -sf "http://localhost:$port/health" >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  echo "!! $name never became healthy on :$port — last 30 lines of $log:" >&2
+  tail -n 30 "$log" >&2 || true
+  return 1
+}
+
 echo "==> starting storefront-mcp on :$STOREFRONT_PORT ..."
 PAYBOUND_STOREFRONT_PORT="$STOREFRONT_PORT" ./target/debug/storefront-mcp.exe \
   >/tmp/pb_backend_storefront.log 2>&1 &
@@ -42,15 +75,15 @@ PAYBOUND_GATEWAY_PORT="$GATEWAY_PORT" ./target/debug/gateway.exe \
   >/tmp/pb_backend_gateway.log 2>&1 &
 PIDS+=("$!")
 
-for _ in $(seq 1 20); do curl -sf "http://localhost:$STOREFRONT_PORT/health" >/dev/null && break; sleep 0.5; done
-for _ in $(seq 1 20); do curl -sf "http://localhost:$GATEWAY_PORT/health" >/dev/null && break; sleep 0.5; done
+await_health "storefront-mcp" "$STOREFRONT_PORT" 20 /tmp/pb_backend_storefront.log
+await_health "gateway" "$GATEWAY_PORT" 20 /tmp/pb_backend_gateway.log
 
 echo "==> starting agent API on :$AGENT_API_PORT ..."
 STOREFRONT_URL="http://localhost:$STOREFRONT_PORT" "$CONDA" run --no-capture-output -n paybound \
   uvicorn services.api.main:app --host 0.0.0.0 --port "$AGENT_API_PORT" \
   >/tmp/pb_backend_agent_api.log 2>&1 &
 PIDS+=("$!")
-for _ in $(seq 1 40); do curl -sf "http://localhost:$AGENT_API_PORT/health" >/dev/null && break; sleep 0.5; done
+await_health "agent API" "$AGENT_API_PORT" 40 /tmp/pb_backend_agent_api.log
 
 echo ""
 echo "=================================================================="
