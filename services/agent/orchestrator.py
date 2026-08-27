@@ -76,8 +76,19 @@ class Orchestrator(BaseAgent):
         super().__init__(mcp, name="orchestrator", request_budget=request_budget)
         self.llm = llm
         self.db = db
+        # Share ONE MiniLM embedder across the pipeline: the relevance ranker
+        # owns it (loads it lazily), and the upsell model reuses it so its
+        # semantic complement lookup matches search's embedding space exactly —
+        # and we never load MiniLM twice.
+        if upsell is not None and relevance is not None:
+            try:
+                upsell.set_embedder(relevance.embedder)
+            except Exception:  # noqa: BLE001
+                pass  # upsell still works via exact-match table + keyword search
         self.discovery = DiscoveryWorker(mcp, request_budget, relevance=relevance)
-        self.cart_composer = CartComposer(mcp, request_budget, upsell=upsell, confidence=confidence)
+        self.cart_composer = CartComposer(
+            mcp, request_budget, upsell=upsell, confidence=confidence, relevance=relevance
+        )
         self.clarification = ClarificationWorker(mcp, request_budget)
 
     def run(

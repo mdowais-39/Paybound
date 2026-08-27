@@ -20,10 +20,14 @@ from ..models import Candidate, ComposedCart, Intent
 
 
 class CartComposer(BaseAgent):
-    def __init__(self, mcp, request_budget: int = 12, upsell=None, confidence=None):
+    def __init__(self, mcp, request_budget: int = 12, upsell=None, confidence=None, relevance=None):
         super().__init__(mcp, name="cart_composer", request_budget=request_budget)
         self.upsell = upsell
         self.confidence = confidence
+        #: The relevance ranker, used ONLY for its MiniLM embedder so the
+        #: complement lookup can drive the storefront's semantic search (the
+        #: same pgvector path search uses) instead of literal category strings.
+        self.relevance = relevance
 
     def compose(
         self,
@@ -81,10 +85,20 @@ class CartComposer(BaseAgent):
     def find_upsell(
         self, chosen: Candidate, allowed_categories: list[str] | None, intent: Intent
     ) -> dict | None:
-        """PROPOSE one complement item in an allowed, in-stock, in-budget
-        category — read-only, does not touch the cart or call create_cart. The
-        orchestrator shows this to the human (state=UPSELL) and only feeds its
-        item_id back into `compose` if they accept."""
+        """PROPOSE one complement item — read-only, does not touch the cart or
+        call create_cart. The orchestrator shows this to the human (state=
+        UPSELL) and only feeds its item_id back into `compose` if they accept.
+
+        The trained co-purchase table supplies WHICH categories complement the
+        chosen one (`complement_categories_for`, which itself bridges an unseen
+        catalog category to its nearest trained key by embedding). Each
+        complement category then drives the storefront's SEMANTIC search (the
+        same MiniLM/pgvector path search uses) — so a complement concept like
+        'socks' matches the nearest real product even when the catalog has no
+        category literally named 'socks', instead of requiring an exact string
+        match. The mandate is still enforced on the RETURNED item's real
+        category, and a complement must be a DIFFERENT category than the chosen
+        item (a complement, not more of the same)."""
         if self.upsell is None:
             return None
         # An empty/absent allow-list means the mandate is UNRESTRICTED (same
@@ -92,17 +106,29 @@ class CartComposer(BaseAgent):
         # category passes) — not "nothing is allowed". `allowed = None` below
         # skips the scope filter entirely in that case.
         allowed = set(allowed_categories) if allowed_categories else None
-        for comp_cat in self.upsell.complement_categories(chosen.category):
-            if allowed is not None and comp_cat not in allowed:
-                continue
-            hits = self.call_tool("search_catalog", {"query": comp_cat, "limit": 10})
+        cap = intent.max_price_paise
+        for comp_cat in self.upsell.complement_categories_for(chosen.category):
+            args: dict = {"query": comp_cat, "limit": 10}
+            if self.relevance is not None:
+                try:
+                    args["query_embedding"] = self.relevance.embed_query(comp_cat)
+                except Exception:  # noqa: BLE001
+                    pass  # fall back to keyword search
+            hits = self.call_tool("search_catalog", args)
             for it in hits.get("items", []):
-                # Must be the same merchant (single-merchant carts) and in budget.
-                if it["category"] != comp_cat or it["item_id"] == chosen.item_id:
+                if it["item_id"] == chosen.item_id:
                     continue
+                # A complement is a DIFFERENT category, not more of the same item.
+                if it["category"] == chosen.category:
+                    continue
+                # Enforce the mandate on the ITEM's real category (semantic search
+                # may return a category other than the complement concept).
+                if allowed is not None and it["category"] not in allowed:
+                    continue
+                # Single-merchant carts, and within any stated price limit.
                 if chosen.merchant_id and it.get("merchant_id") != chosen.merchant_id:
                     continue
-                if intent.max_price_paise is None or it["price_paise"] <= intent.max_price_paise:
+                if cap is None or it["price_paise"] <= cap:
                     return it
         return None
 
