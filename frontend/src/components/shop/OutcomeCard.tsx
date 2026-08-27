@@ -96,7 +96,16 @@ export const OutcomeCard: React.FC<OutcomeCardProps> = ({
 
         {/* Payment Action Link */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-3 border-t border-[#E5E7EB]">
-          {result.payment_link ? (
+          {result.payment_link && result.payment_link.startsWith("dry-run://") ? (
+            // The backend is running with PAYBOUND_DRY_RUN=true — the kernel
+            // gate and audit chain are fully real, but the Razorpay call was
+            // intentionally skipped to conserve the test-mode account's
+            // limited payment-link quota. This is never a clickable link.
+            <span className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-[#FFFBEB] border border-[#FDE68A] text-xs font-mono text-[#92400E]">
+              <span className="font-bold">DRY RUN</span>
+              <span>Kernel approved — no real Razorpay call was made (quota-saving mode).</span>
+            </span>
+          ) : result.payment_link ? (
             <>
               <a
                 href={result.payment_link}

@@ -43,12 +43,29 @@ async fn main() -> anyhow::Result<()> {
 
     // Wire the execution plane so an approved checkout creates the real payment
     // link server-side (the agent never has a money tool).
-    let key_id = std::env::var("RAZORPAY_KEY_ID").unwrap_or_default();
-    let key_secret = std::env::var("RAZORPAY_KEY_SECRET").unwrap_or_default();
-    let client = Arc::new(razorpay_client::RazorpayClient::new(key_id, key_secret));
+    //
+    // PAYBOUND_DRY_RUN=true swaps in a gateway that never touches the network —
+    // for rehearsing the full flow (kernel gate, audit chain, AUTHORIZED /
+    // NEEDS_HUMAN-approve) without spending the test-mode account's limited
+    // payment-link quota. Everything except the actual Razorpay call stays
+    // real; the returned "link" is deliberately unclickable-looking so it's
+    // never mistaken for a real one.
+    let dry_run = std::env::var("PAYBOUND_DRY_RUN")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let gateway: Arc<dyn razorpay_client::PaymentGateway> = if dry_run {
+        tracing::warn!(
+            "PAYBOUND_DRY_RUN=true — no real Razorpay calls will be made; payment links are simulated"
+        );
+        Arc::new(razorpay_client::DryRunGateway)
+    } else {
+        let key_id = std::env::var("RAZORPAY_KEY_ID").unwrap_or_default();
+        let key_secret = std::env::var("RAZORPAY_KEY_SECRET").unwrap_or_default();
+        Arc::new(razorpay_client::RazorpayClient::new(key_id, key_secret))
+    };
     let exec = Arc::new(execution::ExecutionPlane::new(
         pool.clone(),
-        client,
+        gateway,
         execution::ExecConfig::default(),
     ));
 

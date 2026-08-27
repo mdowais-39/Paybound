@@ -178,3 +178,76 @@ fn str_field(v: &serde_json::Value, key: &str) -> Result<String, AppError> {
         .map(|s| s.to_string())
         .ok_or_else(|| AppError::Internal(format!("razorpay response missing '{key}'")))
 }
+
+/// A `PaymentGateway` that never touches the network — for rehearsing the
+/// full purchase flow (including the AUTHORIZED/NEEDS_HUMAN-approve paths)
+/// without spending any of the test-mode account's limited real payment-link
+/// quota. Everything upstream of this (the kernel gate, the audit chain, the
+/// idempotency key) is completely real; only the actual Razorpay call is
+/// skipped. The returned "link" deliberately does NOT look like a real
+/// `rzp.io` URL — it must be obviously unclickable/fake so nobody mistakes a
+/// rehearsal for a real payment link. Enabled via `PAYBOUND_DRY_RUN=true`
+/// (see storefront-mcp's main.rs); every dry-run id/URL is tagged so it's
+/// unmistakable in the UI and the audit trail.
+#[derive(Clone, Default)]
+pub struct DryRunGateway;
+
+#[async_trait]
+impl PaymentGateway for DryRunGateway {
+    async fn create_order(&self, amount_paise: i64, receipt: &str) -> Result<Order, AppError> {
+        Ok(Order {
+            id: format!("order_DRYRUN_{}", &receipt[..receipt.len().min(12)]),
+            status: "created".into(),
+            amount: amount_paise,
+        })
+    }
+
+    async fn create_payment_link(&self, req: &PaymentLinkRequest) -> Result<PaymentLink, AppError> {
+        let id = format!(
+            "plink_DRYRUN_{}",
+            &req.reference_id[..req.reference_id.len().min(12)]
+        );
+        Ok(PaymentLink {
+            short_url: format!("dry-run://no-real-payment-link-created/{id}"),
+            id,
+            status: "created".into(),
+            amount: req.amount,
+        })
+    }
+
+    async fn fetch_payment_link(&self, id: &str) -> Result<PaymentLink, AppError> {
+        Ok(PaymentLink {
+            id: id.to_string(),
+            status: "created".into(),
+            short_url: format!("dry-run://no-real-payment-link-created/{id}"),
+            amount: 0,
+        })
+    }
+}
+
+#[cfg(test)]
+mod dry_run_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dry_run_link_is_never_a_real_looking_url() {
+        let gw = DryRunGateway;
+        let req = PaymentLinkRequest {
+            amount: 55600,
+            currency: "INR".into(),
+            description: "test".into(),
+            reference_id: "sess-123".into(),
+            customer_name: "x".into(),
+            customer_contact: "x".into(),
+            customer_email: "x".into(),
+        };
+        let link = gw.create_payment_link(&req).await.unwrap();
+        // Must never resemble a clickable rzp.io link — a rehearsal must be
+        // unmistakable from a real payment link, never accidentally payable.
+        assert!(!link.short_url.contains("rzp.io"));
+        assert!(link.short_url.starts_with("dry-run://"));
+        // Downstream amount checks (e.g. audit narration) still see the real
+        // requested amount, even though no money can move.
+        assert_eq!(link.amount, 55600);
+    }
+}

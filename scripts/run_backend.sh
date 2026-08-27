@@ -30,7 +30,10 @@ AGENT_API_PORT="${AGENT_API_PORT:-8092}"
 free_port() {
   local port="$1"
   local pid
-  pid=$(netstat -ano 2>/dev/null | grep ":$port " | grep LISTENING | awk '{print $NF}' | sort -u | head -1)
+  # The common case is "nothing found" (grep exits 1) — that must NOT abort
+  # the script under `set -e`/pipefail, so the whole pipeline is guarded with
+  # `|| true` rather than only the final taskkill.
+  pid=$(netstat -ano 2>/dev/null | grep ":$port " | grep LISTENING | awk '{print $NF}' | sort -u | head -1) || true
   if [ -n "${pid:-}" ]; then
     echo "==> port $port was held by stale pid $pid — freeing it"
     taskkill //F //PID "$pid" >/dev/null 2>&1 || true
@@ -91,6 +94,14 @@ echo " Paybound backend is up:"
 echo "   storefront-mcp  http://localhost:$STOREFRONT_PORT  (catalog + kernel-gated checkout)"
 echo "   gateway         http://localhost:$GATEWAY_PORT  (mandates, sessions, audit, revoke)"
 echo "   agent API       http://localhost:$AGENT_API_PORT  (run a goal, approve)"
+if [ "${PAYBOUND_DRY_RUN:-false}" = "true" ] || [ "${PAYBOUND_DRY_RUN:-false}" = "1" ]; then
+  echo ""
+  echo "   DRY RUN MODE — real Razorpay calls are OFF (PAYBOUND_DRY_RUN=true in .env)."
+  echo "   Approved purchases show a DRY RUN badge instead of a real payment link."
+else
+  echo ""
+  echo "   Real Razorpay calls are ON. Flip PAYBOUND_DRY_RUN=true in .env to rehearse without spending the payment-link quota."
+fi
 echo ""
 echo " Try it (mandates need a bearer token — mint one first):"
 echo "   TOKEN=\$(curl -s -X POST http://localhost:$GATEWAY_PORT/identity | python -c \"import sys,json;print(json.load(sys.stdin)['token'])\")"
