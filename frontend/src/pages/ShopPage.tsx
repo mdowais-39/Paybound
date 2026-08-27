@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useMandate } from "../context/MandateContext";
 import { CartList, CartSession } from "../components/shop/CartList";
@@ -8,6 +8,12 @@ import { Pill } from "../components/shared/Pill";
 import { SpendMeter } from "../components/layout/SpendMeter";
 import { runAgentStream, selectOptionStream, approveSession } from "../lib/api";
 import { PipelineStageState, OrchestratorResult, SessionOutcome } from "../lib/types";
+import {
+  loadCarts,
+  saveCarts,
+  loadSelectedCartId,
+  saveSelectedCartId,
+} from "../lib/cartStore";
 import { ShoppingBag } from "lucide-react";
 
 // The pipeline stepper is driven by the REAL orchestrator result — it reflects
@@ -121,13 +127,40 @@ function titleForResult(result: OrchestratorResult, goal: string): string {
 
 export const ShopPage: React.FC = () => {
   const { activeMandate, refreshMandates } = useMandate();
+  const mandateId = activeMandate?.mandate_id || null;
   const [carts, setCarts] = useState<CartSession[]>([]);
   const [selectedCartId, setSelectedCartId] = useState<string | null>(null);
+  // Which mandate the current `carts`/`selectedCartId` were hydrated for. The
+  // save effects below only persist once this matches the bound mandate, so a
+  // mandate switch never clobbers the new mandate's stored carts with the old
+  // mandate's still-in-state values.
+  const [hydratedMandate, setHydratedMandate] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [approving, setApproving] = useState(false);
 
   const selectedCart = carts.find((c) => c.id === selectedCartId) || null;
   const sessionId = activeMandate?.session_id || null;
+
+  // Rehydrate this mandate's persisted run-history whenever the bound mandate
+  // changes (including the first async load and every tab remount).
+  useEffect(() => {
+    const loaded = loadCarts(mandateId);
+    setCarts(loaded);
+    const savedSel = loadSelectedCartId(mandateId);
+    setSelectedCartId(savedSel && loaded.some((c) => c.id === savedSel) ? savedSel : null);
+    setHydratedMandate(mandateId);
+  }, [mandateId]);
+
+  // Persist carts + selection — but only after hydration for THIS mandate.
+  useEffect(() => {
+    if (hydratedMandate !== mandateId) return;
+    saveCarts(mandateId, carts);
+  }, [carts, mandateId, hydratedMandate]);
+
+  useEffect(() => {
+    if (hydratedMandate !== mandateId) return;
+    saveSelectedCartId(mandateId, selectedCartId);
+  }, [selectedCartId, mandateId, hydratedMandate]);
 
   const patchCart = (id: string, patch: Partial<CartSession>) =>
     setCarts((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
