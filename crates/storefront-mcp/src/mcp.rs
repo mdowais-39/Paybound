@@ -43,7 +43,19 @@ async fn call_tool(store: &Storefront, name: &str, args: &Value) -> Result<Value
         "search_catalog" => {
             let query = str_arg(args, "query")?;
             let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10);
-            let items = store.search_catalog(&query, limit).await.map_err(estr)?;
+            // Optional MiniLM query embedding for semantic (meaning-based)
+            // search; the discovery worker computes it. Absent → keyword-only.
+            let embedding: Option<Vec<f32>> = args.get("query_embedding").and_then(|v| {
+                v.as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_f64().map(|f| f as f32))
+                        .collect()
+                })
+            });
+            let items = store
+                .search_catalog(&query, limit, embedding.as_deref())
+                .await
+                .map_err(estr)?;
             Ok(json!({ "items": items }))
         }
         "get_availability" => {
@@ -85,12 +97,17 @@ fn tool_specs() -> Value {
     json!([
         {
             "name": "search_catalog",
-            "description": "Search products by natural-language query.",
+            "description": "Search products by natural-language query. Pass an optional 384-dim query_embedding for semantic (meaning-based) search.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
-                    "limit": { "type": "integer", "default": 10 }
+                    "limit": { "type": "integer", "default": 10 },
+                    "query_embedding": {
+                        "type": "array",
+                        "items": { "type": "number" },
+                        "description": "Optional MiniLM (384-dim) embedding of the query for semantic search."
+                    }
                 },
                 "required": ["query"]
             }

@@ -76,7 +76,7 @@ async fn search_availability_variants(pool: PgPool) {
     let (_m, cheap, _pricey) = seed_catalog(&pool).await;
     let store = Storefront::new(pool.clone());
 
-    let results = store.search_catalog("shoe", 10).await.unwrap();
+    let results = store.search_catalog("shoe", 10, None).await.unwrap();
     assert!(results.len() >= 2, "search should find the seeded shoes");
     assert!(results.iter().all(|r| r.category == "footwear"));
 

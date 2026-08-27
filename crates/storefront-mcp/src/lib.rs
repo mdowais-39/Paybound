@@ -106,19 +106,56 @@ impl Storefront {
         }
     }
 
-    /// Search the catalog. OR-joined full-text retrieval (any query term can
-    /// match, not all of them — see `or_tsquery`) so a genuinely relevant item
-    /// is never invisible just because it's missing one word of the phrase
-    /// (e.g. "study table" still finds items titled "...Side Table" — nothing
-    /// in this catalog literally says "study"). `ts_rank` still favors items
-    /// matching MORE terms, and the discovery worker's trained relevance
-    /// ranker (MiniLM + XGBoost) reranks this candidate pool afterward for
-    /// true relevance — this query's job is recall, not precision.
+    /// Search the catalog. **Hybrid retrieval**: when a `query_embedding` is
+    /// supplied (the discovery worker computes it with MiniLM), we take the
+    /// semantic nearest-neighbours by pgvector cosine distance AND the lexical
+    /// keyword matches, then merge them — so a query like "office chair" finds
+    /// real office chairs even when they're filed under "home furniture" and
+    /// share no literal words, while exact keyword hits are never lost. With no
+    /// embedding (tests / older callers) it falls back to the keyword-only path.
+    /// Either way this query's job is RECALL; the discovery worker's trained
+    /// relevance ranker reranks the merged pool for precision.
     pub async fn search_catalog(
         &self,
         query: &str,
         limit: i64,
+        query_embedding: Option<&[f32]>,
     ) -> Result<Vec<CatalogItemView>, AppError> {
+        // 1. Semantic nearest-neighbours (only when an embedding is provided and
+        //    items have been embedded). pgvector reads the text form '[..]'
+        //    cast to ::vector; sqlx's checked macro doesn't know the vector
+        //    type, so this arm uses the runtime query API.
+        let mut items: Vec<CatalogItemView> = Vec::new();
+        if let Some(emb) = query_embedding {
+            let literal = vector_literal(emb);
+            let semantic = sqlx::query_as::<_, (Uuid, Uuid, String, String, i64, bool)>(
+                "SELECT item_id, merchant_id, title, category, price_paise, availability
+                 FROM catalog_item
+                 WHERE embedding IS NOT NULL
+                 ORDER BY embedding <=> $1::vector
+                 LIMIT $2",
+            )
+            .bind(&literal)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+            items.extend(semantic.into_iter().map(
+                |(item_id, merchant_id, title, category, price_paise, availability)| {
+                    CatalogItemView {
+                        item_id,
+                        merchant_id,
+                        title,
+                        category,
+                        price_paise,
+                        availability,
+                    }
+                },
+            ));
+        }
+
+        // 2. Lexical keyword matches (always) — union'd in after the semantic
+        //    hits, deduped by item_id, capped at `limit`.
         let pattern = format!("%{query}%");
         let tsquery = or_tsquery(query);
         let rows = sqlx::query!(
@@ -139,17 +176,21 @@ impl Storefront {
         .await
         .map_err(db)?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| CatalogItemView {
-                item_id: r.item_id,
-                merchant_id: r.merchant_id,
-                title: r.title,
-                category: r.category,
-                price_paise: r.price_paise,
-                availability: r.availability,
-            })
-            .collect())
+        let mut seen: std::collections::HashSet<Uuid> = items.iter().map(|i| i.item_id).collect();
+        for r in rows {
+            if seen.insert(r.item_id) {
+                items.push(CatalogItemView {
+                    item_id: r.item_id,
+                    merchant_id: r.merchant_id,
+                    title: r.title,
+                    category: r.category,
+                    price_paise: r.price_paise,
+                    availability: r.availability,
+                });
+            }
+        }
+        items.truncate(limit.max(0) as usize);
+        Ok(items)
     }
 
     /// Live availability + price for one item.
@@ -392,6 +433,21 @@ fn db(e: sqlx::Error) -> AppError {
 /// terms are sanitized before joining; an all-punctuation/empty query falls
 /// back to a token that can't match anything, leaving the ILIKE fallback in
 /// `search_catalog` as the only path.
+/// Format an embedding as the pgvector text literal `[f1,f2,...]` (bound as a
+/// text param and cast to `::vector` in SQL).
+fn vector_literal(emb: &[f32]) -> String {
+    let mut s = String::with_capacity(emb.len() * 8 + 2);
+    s.push('[');
+    for (i, x) in emb.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!("{x:.6}"));
+    }
+    s.push(']');
+    s
+}
+
 fn or_tsquery(query: &str) -> String {
     let terms: Vec<String> = query
         .split_whitespace()

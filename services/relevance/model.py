@@ -48,6 +48,13 @@ class RelevanceRanker:
             self.embedder.encode(texts, normalize_embeddings=True, batch_size=256, show_progress_bar=False)
         )
 
+    def embed_query(self, query: str) -> list[float]:
+        """A single normalized MiniLM embedding for a search query, as a plain
+        list of floats — used to drive the storefront's pgvector semantic
+        search. Same model/normalization as the item embeddings, so cosine
+        distance between them is meaningful."""
+        return [float(x) for x in self._embed([query])[0]]
+
     def features(self, queries: list[str], titles: list[str]) -> np.ndarray:
         q_emb = self._embed(queries)
         t_emb = self._embed(titles)

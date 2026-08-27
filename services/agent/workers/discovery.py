@@ -23,7 +23,18 @@ class DiscoveryWorker(BaseAgent):
     ) -> list[Candidate]:
         """Search, then keep only items the mandate actually allows (a bounded
         shopper proposes only buyable items — the kernel is still the gate)."""
-        result = self.call_tool("search_catalog", {"query": intent.query, "limit": limit})
+        args: dict = {"query": intent.query, "limit": limit}
+        # When the trained ranker is present, embed the query with the SAME
+        # MiniLM model whose embeddings sit in the catalog, so the storefront
+        # can do semantic (meaning-based) search — this is what lets "office
+        # chair" find chairs filed under "home furniture", not just literal
+        # keyword hits. Best-effort: any failure falls back to keyword search.
+        if self.relevance is not None:
+            try:
+                args["query_embedding"] = self.relevance.embed_query(intent.query)
+            except Exception:  # noqa: BLE001
+                pass
+        result = self.call_tool("search_catalog", args)
         cats = set(allowed_categories or [])
         merchants = set(allowed_merchants or [])
         candidates = []
