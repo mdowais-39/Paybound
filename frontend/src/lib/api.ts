@@ -131,26 +131,17 @@ export async function selectOption(sessionId: string, itemId: string): Promise<O
 export type StageEvent = { id: string; status: string };
 export type OnStage = (evt: StageEvent) => void;
 
-/** Consume an SSE stream from the agent API: forwards each real pipeline-stage
- * event to `onStage` and resolves with the terminal OrchestratorResult. Uses
- * fetch (not EventSource) so the bearer token + POST body work. */
-async function streamOrchestrate(
-  url: string,
-  body: Record<string, unknown>,
+/** Consume a `text/event-stream` body: forwards each `{type:"stage"}` event to
+ * `onStage` and resolves with the terminal `{type:"result"}` payload. Handles
+ * SSE framing (events split on a blank line, `data:` prefix) and chunk
+ * boundaries that fall mid-event. Exported so it can be unit-tested directly
+ * against a fabricated ReadableStream. */
+export async function consumeOrchestratorStream(
+  stream: ReadableStream<Uint8Array>,
   onStage: OnStage,
   what: string,
 ): Promise<OrchestratorResult> {
-  const res = await authFetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok || !res.body) {
-    // Surface a normal error (401/403/404/500) the same way the JSON endpoints do.
-    return asJson(res, what) as Promise<never>;
-  }
-
-  const reader = res.body.getReader();
+  const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let result: OrchestratorResult | null = null;
@@ -176,6 +167,26 @@ async function streamOrchestrate(
 
   if (!result) throw new Error(`${what} ended without a result`);
   return result;
+}
+
+/** POST to an SSE endpoint (with the bearer token + body — hence fetch, not
+ * EventSource) and consume the stream. */
+async function streamOrchestrate(
+  url: string,
+  body: Record<string, unknown>,
+  onStage: OnStage,
+  what: string,
+): Promise<OrchestratorResult> {
+  const res = await authFetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    // Surface a normal error (401/403/404/500) the same way the JSON endpoints do.
+    return asJson(res, what) as Promise<never>;
+  }
+  return consumeOrchestratorStream(res.body, onStage, what);
 }
 
 export function runAgentStream(sessionId: string, goal: string, onStage: OnStage): Promise<OrchestratorResult> {
