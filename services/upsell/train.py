@@ -225,12 +225,45 @@ def main() -> int:
                 if v not in category_complements[k]:
                     category_complements[k].append(v)
     # Fashion complements observed in Amazon 'also-bought' (footwear -> socks/care),
-    # normalised to our catalog's category tokens.
+    # normalised to our catalog's category tokens. NOTE: the live catalog
+    # ingested for this deployment does not currently stock "socks"/"shoe
+    # care"/"sports accessories" as categories, so these entries are kept for
+    # documentation and for any catalog that DOES carry them (the Cart-Composer
+    # already skips a complement category with no live matches and tries the
+    # next one) — they are not the reason the categories below were added.
     for k, comps in {
         "footwear": ["socks", "shoe care", "sports accessories"],
         "shoes": ["socks", "shoe care"],
         "sandals": ["socks"],
     }.items():
+        for c in comps:
+            if c not in category_complements[k]:
+                category_complements[k].append(c)
+
+    # Category-family cross-sells curated by hand against what THIS deployment's
+    # live catalog actually stocks (checked via `SELECT DISTINCT category`) —
+    # the same "data-grounded, normalised to our catalog's tokens" approach as
+    # the footwear mapping above, just aimed at categories this catalog carries
+    # so the Cart-Composer can find real, in-stock complements today. Each pair
+    # is a genuine retail adjacency (jewelry "complete the set", furnishing a
+    # room, rounding out a phone purchase, grocery pairings already covered by
+    # the Instacart-trained aisle complements above).
+    CATALOG_FAMILIES: dict[str, list[str]] = {
+        "ring": ["earring", "necklace"],
+        "earring": ["ring", "necklace"],
+        "necklace": ["ring", "earring"],
+        "sofa": ["rug", "chair", "wall art", "home furniture and decor"],
+        "chair": ["table", "rug", "home furniture and decor"],
+        "table": ["chair", "rug", "wall art"],
+        "rug": ["home furniture and decor", "wall art"],
+        "lamp": ["home bed and bath", "home furniture and decor"],
+        "cellular phone case": ["charging adapter", "screen protector", "wireless accessory"],
+        "office products": ["office electronics"],
+        "shoes": ["sporting goods"],
+        "sandal": ["sporting goods"],
+        "boot": ["sporting goods"],
+    }
+    for k, comps in CATALOG_FAMILIES.items():
         for c in comps:
             if c not in category_complements[k]:
                 category_complements[k].append(c)

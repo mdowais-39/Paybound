@@ -13,6 +13,9 @@ export interface CartLineItem {
   qty: number;
   price_paise: number;
   category: string;
+  /** True when the agent added this line as a complementary suggestion (e.g.
+   * sporting goods with running shoes), not something the customer asked for. */
+  is_upsell?: boolean;
 }
 
 export interface CartView {

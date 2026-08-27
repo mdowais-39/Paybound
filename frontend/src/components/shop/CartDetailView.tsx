@@ -223,15 +223,28 @@ export const CartDetailView: React.FC<CartDetailViewProps> = ({
 
         <div className="divide-y divide-[#E5E7EB] font-mono text-xs">
           {lineItems.map((item, idx) => (
-            <div key={idx} className="py-2.5 flex items-center justify-between gap-4">
+            <div
+              key={idx}
+              className={`py-2.5 flex items-center justify-between gap-4 ${
+                item.is_upsell ? "bg-[#FDFBFF] -mx-4 sm:-mx-5 px-4 sm:px-5" : ""
+              }`}
+            >
               <div className="flex items-center gap-3">
                 <div className="w-7 h-7 rounded-lg bg-[#F3F4F6] text-[#111827] flex items-center justify-center font-bold text-[10px]">
                   {item.qty}x
                 </div>
                 <div>
-                  <p className="font-sans font-semibold text-[#111827]">
-                    {item.title || "Item Candidate"}
-                  </p>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <p className="font-sans font-semibold text-[#111827]">
+                      {item.title || "Item Candidate"}
+                    </p>
+                    {item.is_upsell && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#7C3AED] bg-[#FAF5FF] border border-[#DDD6FE] px-1.5 py-0.5 rounded-full">
+                        <Sparkles className="w-2.5 h-2.5" />
+                        Suggested add-on
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[11px] text-[#6B7280] font-mono">
                     Category: {item.category} · Ref: {item.item_id}
                   </p>

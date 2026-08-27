@@ -46,3 +46,18 @@ def test_upsell_suggests_a_footwear_complement():
     ]
     suggestion = model.suggest_for_cart(cart, catalog)
     assert suggestion is not None and suggestion["category"] == "socks"
+
+
+@pytest.mark.skipif(not UP_ART.exists(), reason="upsell artifact not trained")
+def test_upsell_covers_categories_the_live_catalog_actually_stocks():
+    """The trained artifact's category vocabulary (Instacart aisles + Amazon
+    Reviews fashion) barely overlaps this deployment's live catalog (a general
+    Amazon marketplace export: jewelry, home furniture, phone cases — no
+    apparel). These pairs were hand-curated against `SELECT DISTINCT category`
+    on the live catalog so upsell has something real to suggest today, not just
+    in a future catalog that happens to stock socks."""
+    model = UpsellModel.load()
+    assert "earring" in model.complement_categories("ring")
+    assert "rug" in model.complement_categories("sofa")
+    assert "charging adapter" in model.complement_categories("cellular phone case")
+    assert "sporting goods" in model.complement_categories("shoes")

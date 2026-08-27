@@ -30,7 +30,9 @@ class CartComposer(BaseAgent):
         items = [{"item_id": chosen.item_id, "qty": 1}]
         # Human-readable line items for display, built from data we already
         # have (the chosen candidate + any complement from search) — real
-        # catalog values, never fabricated.
+        # catalog values, never fabricated. `is_upsell` marks the complement
+        # line so the UI can label it as a suggestion rather than silently
+        # bundling it in as if the customer asked for it.
         display_items = [
             {
                 "item_id": chosen.item_id,
@@ -38,6 +40,7 @@ class CartComposer(BaseAgent):
                 "qty": 1,
                 "price_paise": chosen.price_paise,
                 "category": chosen.category,
+                "is_upsell": False,
             }
         ]
 
@@ -54,6 +57,7 @@ class CartComposer(BaseAgent):
                     "qty": 1,
                     "price_paise": complement["price_paise"],
                     "category": complement["category"],
+                    "is_upsell": True,
                 }
             )
             upsold = True
@@ -69,11 +73,15 @@ class CartComposer(BaseAgent):
         )
 
     def _find_complement(self, chosen: Candidate, allowed_categories, intent) -> dict | None:
-        if self.upsell is None or not allowed_categories:
+        if self.upsell is None:
             return None
-        allowed = set(allowed_categories)
+        # An empty/absent allow-list means the mandate is UNRESTRICTED (same
+        # convention as the kernel: `allowed_categories.is_empty()` = any
+        # category passes) — not "nothing is allowed". `allowed = None` below
+        # skips the scope filter entirely in that case.
+        allowed = set(allowed_categories) if allowed_categories else None
         for comp_cat in self.upsell.complement_categories(chosen.category):
-            if comp_cat not in allowed:
+            if allowed is not None and comp_cat not in allowed:
                 continue
             hits = self.call_tool("search_catalog", {"query": comp_cat, "limit": 10})
             for it in hits.get("items", []):

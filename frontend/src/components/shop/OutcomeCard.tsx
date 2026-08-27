@@ -4,7 +4,7 @@ import { Pill } from "../shared/Pill";
 import { Button } from "../shared/Button";
 import { paiseToRupees, paiseToRupeesPlain } from "../../lib/money";
 import { getRefusalMeta } from "../../lib/verdictMeta";
-import { ExternalLink, CheckCircle2, AlertTriangle, HelpCircle, Check, X, ShieldAlert } from "lucide-react";
+import { ExternalLink, CheckCircle2, AlertTriangle, HelpCircle, Check, X, ShieldAlert, Sparkles } from "lucide-react";
 
 interface OutcomeCardProps {
   result: OrchestratorResult;
@@ -42,7 +42,7 @@ export const OutcomeCard: React.FC<OutcomeCardProps> = ({
   const perTxnCap = mandate?.per_txn_cap_paise ?? null;
   const llmCalls = result.llm_calls;
   const traceShort = result.trace_id ? `${result.trace_id.substring(0, 10)}...` : "—";
-  const firstItemTitle = result.cart?.line_items?.[0]?.title ?? null;
+  const cartLineItems = result.cart?.line_items ?? [];
 
   // 1. APPROVED / AUTHORIZED OUTCOME
   if (isApproved) {
@@ -76,17 +76,40 @@ export const OutcomeCard: React.FC<OutcomeCardProps> = ({
           )}
         </div>
 
-        {/* Cart Line Items */}
+        {/* Cart Line Items — every item, not just the first, so a multi-item
+            total (e.g. shoes + a suggested add-on) is never shown next to
+            just one item's name. */}
         <div className="bg-[#F9FAFB] border border-[#E5E7EB] rounded-lg p-3.5 text-xs">
-          <div className="font-mono text-[11px] uppercase tracking-wider text-[#6B7280] font-semibold mb-1">
+          <div className="font-mono text-[11px] uppercase tracking-wider text-[#6B7280] font-semibold mb-1.5">
             Cart Composed by Agent
           </div>
-          <div className="flex items-center justify-between font-mono text-[#111827]">
-            <span>{firstItemTitle ?? "Composed cart"}</span>
-            <span className="font-semibold tabular-nums">
-              {paiseToRupees(cartAmount)}
-            </span>
+          <div className="flex flex-col gap-1">
+            {(cartLineItems.length > 0
+              ? cartLineItems
+              : [{ title: "Composed cart", price_paise: cartAmount, is_upsell: false }]
+            ).map((item, idx) => (
+              <div key={idx} className="flex items-center justify-between gap-2 font-mono text-[#111827]">
+                <span className="flex items-center gap-1.5 min-w-0 truncate">
+                  <span className="truncate">{item.title || "Item"}</span>
+                  {item.is_upsell && (
+                    <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-[#7C3AED] bg-[#FAF5FF] border border-[#DDD6FE] px-1.5 py-0.5 rounded-full shrink-0">
+                      <Sparkles className="w-2.5 h-2.5" />
+                      Suggested
+                    </span>
+                  )}
+                </span>
+                <span className="font-semibold tabular-nums shrink-0">
+                  {paiseToRupees(item.price_paise)}
+                </span>
+              </div>
+            ))}
           </div>
+          {cartLineItems.length > 1 && (
+            <div className="flex items-center justify-between font-mono text-[#111827] font-bold pt-1.5 mt-1.5 border-t border-[#E5E7EB]">
+              <span>Total</span>
+              <span className="tabular-nums">{paiseToRupees(cartAmount)}</span>
+            </div>
+          )}
         </div>
 
         {/* Message */}
