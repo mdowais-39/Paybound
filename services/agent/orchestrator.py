@@ -293,19 +293,52 @@ class Orchestrator(BaseAgent):
         item_id: str,
         accept: bool,
         addon_item_id: str | None = None,
+        cart_id: str | None = None,
         on_stage: StageCallback | None = None,
     ) -> OrchestratorResult:
         """Resume an UPSELL-paused session after the human accepted or
         declined the suggested complement (POST /sessions/{id}/upsell).
-        `item_id` is the originally chosen item (re-derived fresh, exactly
-        like `select()`); `addon_item_id` is required only when accepting —
-        the exact item_id already shown in `upsell_suggestion`, never
-        re-searched, so what gets added is exactly what was offered. No LLM
-        call, and the confidence gate is skipped: it already passed before
-        this suggestion was ever shown."""
+        `item_id` is the originally chosen item; `addon_item_id` is required
+        only when accepting — the exact item_id already shown in
+        `upsell_suggestion`, never re-searched. No LLM call, and the
+        confidence gate is skipped: it already passed before this suggestion
+        was ever shown.
+
+        `cart_id` is the ALREADY-COMPOSED base cart from the initial pause
+        (that UPSELL result's own `cart_id`). On DECLINE, nothing about that
+        cart changed — its contents are exactly what should be checked out —
+        so it's checked out as-is instead of being rebuilt from scratch.
+        Rebuilding it would create a second `cart_built` audit entry
+        identical to the first, which reads as a confusing duplicate rather
+        than a real second cart. On ACCEPT the cart genuinely differs (it now
+        includes the addon), so it's composed fresh either way."""
         emit = _stage_emitter(on_stage)
         for done in ("pre_checks", "parsing", "searching"):
             emit(done, "success")
+
+        if not accept and cart_id:
+            emit("composing", "active")
+            item = self.call_tool("get_availability", {"item_id": item_id})
+            cart_view = {
+                "cart_id": cart_id,
+                "total_paise": item["price_paise"],
+                "line_items": [
+                    {
+                        "item_id": item["item_id"],
+                        "title": item["title"],
+                        "qty": 1,
+                        "price_paise": item["price_paise"],
+                        "category": item["category"],
+                        "is_upsell": False,
+                    }
+                ],
+            }
+            emit("composing", "success")
+            result = self._checkout(session_id, cart_id, afa_approved=False, on_stage=on_stage)
+            result.amount_paise = item["price_paise"]
+            result.cart = cart_view
+            return result
+
         mandate = self.db.get_mandate_for_session(session_id)
         item = self.call_tool("get_availability", {"item_id": item_id})
         candidate = Candidate(

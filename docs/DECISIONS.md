@@ -207,3 +207,14 @@ The real unit meant by "one cart" is a RUN, not a session. Fix: attribute each a
 - `AuditSessionPanel`: takes a `runId` prop, scopes the displayed timeline to that run, while still showing the real `verify_chain()` verdict for the whole session (a session-wide property, correctly left unscoped).
 
 Verified: 5 new unit tests reproducing the exact real timestamps from the bug report + full frontend suite (31) + tsc. Live: two real purchases (shoes + coffee) run in the same session — 11 real audit entries split into exactly 2 correct groups, zero misattribution.
+
+## Fix duplicate cart_built audit entry on upsell decline (2026-08-28)
+
+The audit timeline showed two identical CART_BUILT entries (same item, same amount, seconds apart) for purchases that happened to offer an upsell. Root cause: `resolve_upsell()` always rebuilt the cart from scratch via `compose()` — even on DECLINE, when nothing about the cart actually changed from what was already composed during the initial pause.
+
+Considered a narrative-only fix (explain the duplicate in the entry's text) but rejected it: it would still leave two real, identical-looking DB rows — a reader still has to stop and read an explanation. Structural fix instead: on decline, the already-composed cart (its `cart_id`, carried on the UPSELL result) is checked out **as-is**, no rebuild, nothing duplicate to explain. On accept, the cart still composes fresh (it genuinely differs — now includes the addon), and that second entry is already self-explanatory (visibly different item count/amount).
+
+- `orchestrator.py`: `resolve_upsell()` takes a `cart_id` param; when declining with one given, skips `compose()`/`create_cart` entirely (reconstructs the display cart from a single `get_availability` call, no DB write) and checks out the original cart directly.
+- `main.py` / `api.ts` / `ShopPage.tsx`: thread the UPSELL result's own `cart_id` through to resolution.
+
+Verified: 1 new orchestrator test (decline reuses the exact cart_id, `create_cart` called exactly once) + full python suite (48) + ruff, frontend tsc. Live: real UPSELL flow through the actual backend — declining now produces exactly one `cart_built` entry, checked-out cart_id matches the original pause exactly.

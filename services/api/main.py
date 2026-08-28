@@ -114,6 +114,10 @@ class UpsellRequest(BaseModel):
     # Required only when accept=true — the exact item_id from the
     # upsell_suggestion the human was shown (never re-searched).
     addon_item_id: str | None = None
+    # The UPSELL result's own cart_id (the already-composed base cart). On
+    # decline, that cart is checked out as-is instead of being rebuilt from
+    # scratch — avoids a confusing duplicate cart_built audit entry.
+    cart_id: str | None = None
     run_id: str | None = None
     goal: str | None = None
 
@@ -298,7 +302,8 @@ def resolve_upsell_stream(session_id: str, req: UpsellRequest, authorization: st
         session_id,
         "upsell",
         lambda orch, on: orch.resolve_upsell(
-            session_id, req.item_id, req.accept, addon_item_id=req.addon_item_id, on_stage=on
+            session_id, req.item_id, req.accept,
+            addon_item_id=req.addon_item_id, cart_id=req.cart_id, on_stage=on,
         ),
         record=lambda rj: _after_step(session_id, req.run_id, req.goal, rj),
     )
@@ -375,7 +380,8 @@ def resolve_upsell(session_id: str, req: UpsellRequest, authorization: str | Non
             span.set_attribute("item_id", req.item_id)
             span.set_attribute("accept", req.accept)
             result = orch.resolve_upsell(
-                session_id, req.item_id, req.accept, addon_item_id=req.addon_item_id
+                session_id, req.item_id, req.accept,
+                addon_item_id=req.addon_item_id, cart_id=req.cart_id,
             )
             trace_id = format(span.get_span_context().trace_id, "032x")
     except LookupError as e:

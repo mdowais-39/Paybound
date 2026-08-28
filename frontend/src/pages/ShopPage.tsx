@@ -379,6 +379,9 @@ export const ShopPage: React.FC = () => {
     if (!sessionId || !selectedCart?.result) return;
     const baseItemId = selectedCart.result.cart?.line_items?.[0]?.item_id;
     const addonItemId = selectedCart.result.upsell_suggestion?.item_id;
+    // The already-composed base cart from the pause — on decline, the
+    // backend checks THIS exact cart out as-is instead of rebuilding it.
+    const backendCartId = selectedCart.result.cart_id ?? undefined;
     if (!baseItemId || (accept && !addonItemId)) return;
     setApproving(true);
     const cartId = selectedCart.id;
@@ -397,6 +400,7 @@ export const ShopPage: React.FC = () => {
         (evt) => applyStageEvent(cartId, evt.id, evt.status),
         cartId,
         goal,
+        backendCartId,
       );
       applyResult(cartId, goal, result);
       await refreshMandates();

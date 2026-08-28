@@ -278,10 +278,14 @@ export function resolveUpsellStream(
   onStage: OnStage,
   runId?: string,
   goal?: string,
+  // The UPSELL result's own cart_id — on decline, the backend checks that
+  // exact cart out as-is instead of rebuilding it (avoids a confusing
+  // duplicate cart_built audit entry for an unchanged cart).
+  cartId?: string,
 ): Promise<OrchestratorResult> {
   return streamOrchestrate(
     `${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/upsell/stream`,
-    { item_id: itemId, accept, addon_item_id: addonItemId, run_id: runId, goal },
+    { item_id: itemId, accept, addon_item_id: addonItemId, cart_id: cartId, run_id: runId, goal },
     onStage,
     "resolveUpsell",
   );

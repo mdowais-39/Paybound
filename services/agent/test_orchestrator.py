@@ -298,13 +298,33 @@ def test_upsell_decline_checks_out_without_the_addon():
     paused = orch.run("s1", "buy running shoes", parsed_intent=intent)
 
     resumed = orch.resolve_upsell(
-        "s1", paused.cart["line_items"][0]["item_id"], accept=False,
+        "s1", paused.cart["line_items"][0]["item_id"], accept=False, cart_id=paused.cart_id,
     )
 
     assert resumed.state == "AUTHORIZED"
     items = resumed.cart["line_items"]
     assert len(items) == 1
     assert resumed.amount_paise == 285000
+
+
+def test_upsell_decline_reuses_the_original_cart_no_duplicate_cart_built():
+    """The whole point of this fix: declining must NOT rebuild the cart from
+    scratch (that created a confusing second, identical cart_built audit
+    entry). It's checked out exactly as it was already composed during the
+    pause."""
+    orch, mcp = _upsell_orch({"verdict": "approved", "payment_link": "https://rzp.io/x"})
+    intent = Intent(query="running shoes", category="footwear")
+    paused = orch.run("s1", "buy running shoes", parsed_intent=intent)
+    assert mcp.calls.count("create_cart") == 1, "sanity: exactly one cart composed during the pause"
+
+    resumed = orch.resolve_upsell(
+        "s1", paused.cart["line_items"][0]["item_id"], accept=False, cart_id=paused.cart_id,
+    )
+
+    assert resumed.state == "AUTHORIZED"
+    assert resumed.cart_id == paused.cart_id, "the SAME cart must be checked out, not a new one"
+    assert mcp.calls.count("create_cart") == 1, "declining must not create a second cart"
+    assert mcp.calls[-1] == "checkout"
 
 
 def test_low_confidence_routes_to_needs_human_before_any_upsell_offer():
