@@ -12,6 +12,9 @@ import {
   Mandate,
   AgentRun,
   AuditChain,
+  AuditLogEntry,
+  AuditLogFilters,
+  AuditEntryContext,
   OrchestratorResult,
   SessionView,
 } from "./types";
@@ -124,6 +127,26 @@ export async function getAuditChain(sessionId: string): Promise<AuditChain> {
   // with the exact AuditEntry field names (seq, event_type, prev_hash,
   // this_hash, payload, narrative, ts).
   return data as AuditChain;
+}
+
+/** The flat, cross-session audit log with server-side filtering — the left
+ * list of the two-pane audit viewer. */
+export async function getAuditLog(filters: AuditLogFilters = {}): Promise<AuditLogEntry[]> {
+  const params = new URLSearchParams();
+  if (filters.eventTypes?.length) params.set("event_type", filters.eventTypes.join(","));
+  if (filters.verdicts?.length) params.set("verdict", filters.verdicts.join(","));
+  if (filters.days) params.set("days", String(filters.days));
+  if (filters.q?.trim()) params.set("q", filters.q.trim());
+  const qs = params.toString();
+  const res = await authFetch(`${GATEWAY_URL}/audit${qs ? `?${qs}` : ""}`);
+  const data = await asJson(res, "getAuditLog");
+  return Array.isArray(data?.entries) ? (data.entries as AuditLogEntry[]) : [];
+}
+
+/** The mandate authority behind a single audit entry (detail pane). */
+export async function getAuditEntryContext(entryId: string): Promise<AuditEntryContext> {
+  const res = await authFetch(`${GATEWAY_URL}/audit/entries/${encodeURIComponent(entryId)}/context`);
+  return asJson(res, "getAuditEntryContext") as Promise<AuditEntryContext>;
 }
 
 // ---- agent (run / select / approve) --------------------------------------

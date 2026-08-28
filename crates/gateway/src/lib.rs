@@ -91,6 +91,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/webhooks/razorpay", post(razorpay_webhook))
         .route("/sessions/{session_id}/audit", get(audit_chain))
+        .route("/audit", get(audit_log))
+        .route("/audit/entries/{entry_id}/context", get(audit_entry_context))
         .route("/sessions/{session_id}", get(get_session))
         .route("/mandates", post(create_mandate).get(list_mandates))
         .route("/mandates/{mandate_id}/runs", get(list_runs))
@@ -144,6 +146,120 @@ async fn audit_chain(
         "verified": verified,
         "entry_count": entries.len(),
         "entries": entries,
+    })))
+}
+
+/// Query params for the flat, cross-session audit log. `event_type`/`verdict`
+/// are COMMA-SEPARATED OR-lists (axum's urlencoded Query can't collect repeated
+/// keys into a Vec, so a single comma-joined value is used instead); `days` is
+/// a rolling window; `q` is a free-text search over session/mandate id,
+/// narrative, and payload.
+#[derive(Debug, Default, Deserialize)]
+struct AuditLogQuery {
+    event_type: Option<String>,
+    verdict: Option<String>,
+    days: Option<i64>,
+    q: Option<String>,
+    limit: Option<i64>,
+}
+
+/// Split a comma-separated filter param into a trimmed, non-empty OR-list.
+fn csv_list(raw: &Option<String>) -> Vec<String> {
+    raw.as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The flat, filterable audit log across ALL of the caller's sessions — the
+/// data behind the left list of the two-pane audit viewer. Owner-scoped (an
+/// entry is visible only when its mandate has no owner or the owner matches),
+/// so one identity never sees another's trail.
+#[tracing::instrument(name = "audit_log", level = "info", skip(s))]
+async fn audit_log(
+    State(s): State<AppState>,
+    Query(q): Query<AuditLogQuery>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    let since = q
+        .days
+        .filter(|d| *d > 0)
+        .map(|d| OffsetDateTime::now_utc() - Duration::days(d));
+    let search = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let limit = q.limit.unwrap_or(200).clamp(1, 500);
+    let event_types = csv_list(&q.event_type);
+    let verdicts = csv_list(&q.verdict);
+
+    let filter = repos::AuditLogFilter {
+        event_types: &event_types,
+        verdicts: &verdicts,
+        since,
+        search,
+    };
+    let rows = repos::list_audit_log(&s.pool, &owner_hash, &filter, limit)
+        .await
+        .map_err(internal)?;
+
+    let entries: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            json!({
+                "entry_id": r.entry_id,
+                "seq": r.seq,
+                "session_id": r.session_id,
+                "mandate_id": r.mandate_id,
+                "event_type": r.event_type,
+                "verdict": r.verdict,
+                "rule_cited": r.rule_cited,
+                "amount_paise": r.amount_paise,
+                "narrative": r.narrative,
+                "prev_hash": r.prev_hash,
+                "this_hash": r.this_hash,
+                "payload": r.payload,
+                "ts": r.ts.format(&Rfc3339).unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "entry_count": entries.len(), "entries": entries })))
+}
+
+/// The mandate context behind one audit entry — "under whose authority did
+/// this happen" — for the detail pane. Owner-scoped like every other
+/// entry-addressed read.
+#[tracing::instrument(name = "audit_entry_context", level = "info", skip(s))]
+async fn audit_entry_context(
+    State(s): State<AppState>,
+    Path(entry_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let owner_hash = authenticate(&s, &headers).await?;
+    let ctx = repos::get_audit_entry_context(&s.pool, entry_id)
+        .await
+        .map_err(|e| match e {
+            common::AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            other => internal(other),
+        })?;
+    if matches!(&ctx.owner_token_hash, Some(h) if h != &owner_hash) {
+        return Err(forbidden("not your audit entry"));
+    }
+    Ok(Json(json!({
+        "session_id": ctx.session_id,
+        "mandate_id": ctx.mandate_id,
+        "payer": ctx.payer,
+        "budget_total_paise": ctx.budget_total_paise,
+        "per_txn_cap_paise": ctx.per_txn_cap_paise,
+        "allowed_categories": ctx.allowed_categories,
+        "allowed_merchants": ctx.allowed_merchants,
+        "ttl_unix": ctx.ttl.unix_timestamp(),
+        "nl_goal": ctx.nl_goal,
+        "revoked": ctx.revoked,
     })))
 }
 

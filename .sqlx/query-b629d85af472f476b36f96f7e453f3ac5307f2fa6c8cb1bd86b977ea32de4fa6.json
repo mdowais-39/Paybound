@@ -1,0 +1,82 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.session_id, m.mandate_id, m.payer, m.budget_total_paise,\n                  m.per_txn_cap_paise, m.allowed_categories, m.allowed_merchants,\n                  m.ttl, m.nl_goal, (m.revoked_at IS NOT NULL) AS \"revoked!\",\n                  m.owner_token_hash\n           FROM audit_entry a\n           JOIN purchase_session s ON s.session_id = a.session_id\n           JOIN intent_mandate m   ON m.mandate_id = s.mandate_id\n           WHERE a.entry_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "mandate_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "payer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "budget_total_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "per_txn_cap_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "allowed_categories",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "allowed_merchants",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "ttl",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "nl_goal",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "revoked!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "owner_token_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      true
+    ]
+  },
+  "hash": "b629d85af472f476b36f96f7e453f3ac5307f2fa6c8cb1bd86b977ea32de4fa6"
+}

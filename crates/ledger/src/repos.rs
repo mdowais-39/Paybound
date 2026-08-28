@@ -400,6 +400,158 @@ pub async fn delete_run(pool: &Db, mandate_id: Uuid, run_id: &str) -> Result<boo
     Ok(r.rows_affected() > 0)
 }
 
+/// One row of the cross-session audit log — an audit entry joined to the
+/// mandate context needed to make it legible in a flat list (which mandate's
+/// authority, and the amount involved, pulled from the entry's own payload).
+pub struct AuditLogRow {
+    pub entry_id: Uuid,
+    pub seq: i64,
+    pub session_id: Uuid,
+    pub mandate_id: Uuid,
+    pub event_type: String,
+    pub verdict: Option<String>,
+    pub rule_cited: Option<String>,
+    pub amount_paise: Option<i64>,
+    pub narrative: Option<String>,
+    pub prev_hash: Option<String>,
+    pub this_hash: String,
+    pub payload: Value,
+    pub ts: OffsetDateTime,
+}
+
+/// Filters for the cross-session audit log. All optional (None = no filter on
+/// that axis). `event_types`/`verdicts` empty means "any".
+pub struct AuditLogFilter<'a> {
+    pub event_types: &'a [String],
+    pub verdicts: &'a [String],
+    pub since: Option<OffsetDateTime>,
+    pub search: Option<&'a str>,
+}
+
+/// Every audit entry across ALL of an owner's sessions, newest-first, with
+/// server-side filtering — the data behind the flat, filterable audit log.
+/// Owner-scoped by joining through the entry's session's mandate: an entry is
+/// visible when its mandate has no owner (pre-auth data) OR the owner matches.
+/// `verdict`/`rule_cited`/`amount_paise` are lifted from the entry payload so a
+/// flat row is legible without opening it; the verdict filter naturally only
+/// matches rows that carry one (gate_decision / payment_effect).
+pub async fn list_audit_log(
+    pool: &Db,
+    owner_token_hash: &str,
+    filter: &AuditLogFilter<'_>,
+    limit: i64,
+) -> Result<Vec<AuditLogRow>, AppError> {
+    let event_types: Option<Vec<String>> =
+        (!filter.event_types.is_empty()).then(|| filter.event_types.to_vec());
+    let verdicts: Option<Vec<String>> =
+        (!filter.verdicts.is_empty()).then(|| filter.verdicts.to_vec());
+    let search = filter.search.map(|s| format!("%{}%", s.to_lowercase()));
+
+    let rows = sqlx::query!(
+        r#"SELECT a.entry_id, a.seq, a.session_id, m.mandate_id,
+                  a.event_type,
+                  a.payload->>'verdict'      AS verdict,
+                  a.payload->>'rule_cited'   AS rule_cited,
+                  (a.payload->>'amount_paise')::bigint AS amount_paise,
+                  a.narrative, a.prev_hash, a.this_hash, a.payload, a.ts
+           FROM audit_entry a
+           JOIN purchase_session s ON s.session_id = a.session_id
+           JOIN intent_mandate m   ON m.mandate_id = s.mandate_id
+           WHERE (m.owner_token_hash IS NULL OR m.owner_token_hash = $1)
+             AND ($2::text[] IS NULL OR a.event_type = ANY($2))
+             AND ($3::text[] IS NULL OR a.payload->>'verdict' = ANY($3))
+             AND ($4::timestamptz IS NULL OR a.ts >= $4)
+             AND ($5::text IS NULL
+                  OR lower(a.session_id::text) LIKE $5
+                  OR lower(m.mandate_id::text) LIKE $5
+                  OR lower(coalesce(a.narrative, '')) LIKE $5
+                  OR lower(a.payload::text) LIKE $5)
+           ORDER BY a.ts DESC, a.seq DESC
+           LIMIT $6"#,
+        owner_token_hash,
+        event_types.as_deref(),
+        verdicts.as_deref(),
+        filter.since,
+        search.as_deref(),
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| AuditLogRow {
+            entry_id: r.entry_id,
+            seq: r.seq,
+            session_id: r.session_id,
+            mandate_id: r.mandate_id,
+            event_type: r.event_type,
+            verdict: r.verdict,
+            rule_cited: r.rule_cited,
+            amount_paise: r.amount_paise,
+            narrative: r.narrative,
+            prev_hash: r.prev_hash,
+            this_hash: r.this_hash,
+            payload: r.payload,
+            ts: r.ts,
+        })
+        .collect())
+}
+
+/// The mandate context behind a single audit entry — payer, bounds, TTL — so
+/// the detail pane can answer "under whose authority did this happen".
+pub struct AuditEntryContextRow {
+    pub session_id: Uuid,
+    pub mandate_id: Uuid,
+    pub payer: String,
+    pub budget_total_paise: Paise,
+    pub per_txn_cap_paise: Paise,
+    pub allowed_categories: Value,
+    pub allowed_merchants: Value,
+    pub ttl: OffsetDateTime,
+    pub nl_goal: String,
+    pub revoked: bool,
+    pub owner_token_hash: Option<String>,
+}
+
+/// Fetch the mandate context for one audit entry (owner check happens in the
+/// gateway handler using the returned `owner_token_hash`).
+pub async fn get_audit_entry_context(
+    pool: &Db,
+    entry_id: Uuid,
+) -> Result<AuditEntryContextRow, AppError> {
+    let r = sqlx::query!(
+        r#"SELECT s.session_id, m.mandate_id, m.payer, m.budget_total_paise,
+                  m.per_txn_cap_paise, m.allowed_categories, m.allowed_merchants,
+                  m.ttl, m.nl_goal, (m.revoked_at IS NOT NULL) AS "revoked!",
+                  m.owner_token_hash
+           FROM audit_entry a
+           JOIN purchase_session s ON s.session_id = a.session_id
+           JOIN intent_mandate m   ON m.mandate_id = s.mandate_id
+           WHERE a.entry_id = $1"#,
+        entry_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?
+    .ok_or_else(|| AppError::NotFound(format!("audit entry {entry_id}")))?;
+
+    Ok(AuditEntryContextRow {
+        session_id: r.session_id,
+        mandate_id: r.mandate_id,
+        payer: r.payer,
+        budget_total_paise: r.budget_total_paise,
+        per_txn_cap_paise: r.per_txn_cap_paise,
+        allowed_categories: r.allowed_categories,
+        allowed_merchants: r.allowed_merchants,
+        ttl: r.ttl,
+        nl_goal: r.nl_goal,
+        revoked: r.revoked,
+        owner_token_hash: r.owner_token_hash,
+    })
+}
+
 /// A session's state joined with its mandate's bounds — the shape the shop
 /// page polls to show a live spend meter alongside the session state.
 pub struct SessionSummaryRow {

@@ -1,0 +1,99 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.entry_id, a.seq, a.session_id, m.mandate_id,\n                  a.event_type,\n                  a.payload->>'verdict'      AS verdict,\n                  a.payload->>'rule_cited'   AS rule_cited,\n                  (a.payload->>'amount_paise')::bigint AS amount_paise,\n                  a.narrative, a.prev_hash, a.this_hash, a.payload, a.ts\n           FROM audit_entry a\n           JOIN purchase_session s ON s.session_id = a.session_id\n           JOIN intent_mandate m   ON m.mandate_id = s.mandate_id\n           WHERE (m.owner_token_hash IS NULL OR m.owner_token_hash = $1)\n             AND ($2::text[] IS NULL OR a.event_type = ANY($2))\n             AND ($3::text[] IS NULL OR a.payload->>'verdict' = ANY($3))\n             AND ($4::timestamptz IS NULL OR a.ts >= $4)\n             AND ($5::text IS NULL\n                  OR lower(a.session_id::text) LIKE $5\n                  OR lower(m.mandate_id::text) LIKE $5\n                  OR lower(coalesce(a.narrative, '')) LIKE $5\n                  OR lower(a.payload::text) LIKE $5)\n           ORDER BY a.ts DESC, a.seq DESC\n           LIMIT $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entry_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "seq",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "session_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "mandate_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "event_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "verdict",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "rule_cited",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "amount_paise",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "narrative",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "prev_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "this_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 12,
+        "name": "ts",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray",
+        "TextArray",
+        "Timestamptz",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4fade72585b8b98d583a9faa298af35d0057f79bab5c81d346e642e4f77d377c"
+}

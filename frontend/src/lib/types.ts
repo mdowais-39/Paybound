@@ -184,6 +184,47 @@ export interface AuditChain {
   entries: AuditEntry[];
 }
 
+/** One row of the flat, cross-session audit log (GET /audit). Carries the
+ * mandate/session ids and the fields lifted from the payload (verdict,
+ * rule_cited, amount) so the list row is legible without opening it. */
+export interface AuditLogEntry {
+  entry_id: string;
+  seq: number;
+  session_id: string;
+  mandate_id: string;
+  event_type: AuditEventType;
+  verdict: Verdict | null;
+  rule_cited: string | null;
+  amount_paise: number | null;
+  narrative: string | null;
+  prev_hash: string | null;
+  this_hash: string;
+  payload: Record<string, unknown>;
+  ts: string;
+}
+
+/** Filters for the audit log — all optional. */
+export interface AuditLogFilters {
+  eventTypes?: AuditEventType[];
+  verdicts?: Verdict[];
+  days?: number;
+  q?: string;
+}
+
+/** The mandate authority behind one audit entry (GET /audit/entries/{id}/context). */
+export interface AuditEntryContext {
+  session_id: string;
+  mandate_id: string;
+  payer: string;
+  budget_total_paise: number;
+  per_txn_cap_paise: number;
+  allowed_categories: string[];
+  allowed_merchants: string[];
+  ttl_unix: number;
+  nl_goal: string;
+  revoked: boolean;
+}
+
 export interface PipelineStageState {
   id: "pre_checks" | "parsing" | "searching" | "composing" | "kernel_gate" | "outcome";
   label: string;
