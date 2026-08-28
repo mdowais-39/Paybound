@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useParams } from "react-router-dom";
-import { getAuditLog } from "../lib/api";
-import { AuditLogEntry, AuditEventType, Verdict } from "../lib/types";
+import { getAuditLog, listRuns } from "../lib/api";
+import { AuditLogEntry, AuditEventType, Verdict, AgentRun } from "../lib/types";
+import { attributeTimestampToRun } from "../lib/auditGrouping";
 import { paiseToRupees } from "../lib/money";
 import { Pill } from "../components/shared/Pill";
 import { AuditSessionPanel } from "../components/audit/AuditSessionPanel";
@@ -46,12 +47,18 @@ const verdictVariant = (v: string | null): "green" | "amber" | "violet" | "slate
   return "slate";
 };
 
-/** One row in the left list — a "cart", i.e. every audit entry that shares a
- * session_id, summarised into a single scannable card instead of leaving each
- * of its stages scattered as separate rows. Derived client-side from the
- * (filtered) flat entry list. */
-interface SessionGroup {
+/** One row in the left list — one CART, i.e. one purchase attempt (run), not
+ * one whole session. A session persists across many separate purchase
+ * attempts (that's how cumulative-budget tracking works), so grouping by
+ * session_id alone would merge unrelated attempts — possibly hours apart —
+ * into one card. Entries are attributed to the run that actually produced
+ * them via `attributeTimestampToRun` (real agent_run timestamps, not a
+ * guessed time gap). `runId` is null only for a session with no runs at all
+ * (e.g. a mandate created but never used) — the whole session is its own card. */
+interface CartGroup {
+  key: string;
   sessionId: string;
+  runId: string | null;
   latestTs: string;
   title: string;
   verdict: Verdict | null;
@@ -66,32 +73,45 @@ interface SessionGroup {
 // human-typed goal.
 const GENERIC_NL_GOAL = "shop within budget";
 
-function groupBySession(entries: AuditLogEntry[]): SessionGroup[] {
-  const bySession = new Map<string, AuditLogEntry[]>();
+function titleFor(rows: AuditLogEntry[], fallbackId: string): string {
+  const created = rows.find((r) => r.event_type === "session_created");
+  const goal = (created?.payload as any)?.nl_goal as string | undefined;
+  const identifying = rows.find(
+    (r) => (r.event_type === "cart_built" || r.event_type === "gate_decision" || r.event_type === "payment_effect") && r.narrative,
+  )?.narrative;
+  return (
+    identifying
+      ?? (goal && goal !== GENERIC_NL_GOAL ? `"${goal}"` : undefined)
+      ?? rows[rows.length - 1]?.narrative
+      ?? `Session ${fallbackId.slice(0, 10)}…`
+  );
+}
+
+function groupByCart(entries: AuditLogEntry[], runsByMandate: Map<string, AgentRun[]>): CartGroup[] {
+  const buckets = new Map<string, AuditLogEntry[]>();
+  const bucketMeta = new Map<string, { sessionId: string; runId: string | null }>();
   for (const e of entries) {
-    const arr = bySession.get(e.session_id);
-    if (arr) arr.push(e);
-    else bySession.set(e.session_id, [e]);
+    const runs = runsByMandate.get(e.mandate_id) ?? [];
+    const runId = attributeTimestampToRun(Date.parse(e.ts), runs);
+    const key = runId ? `run:${runId}` : `session:${e.session_id}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, []);
+      bucketMeta.set(key, { sessionId: e.session_id, runId });
+    }
+    buckets.get(key)!.push(e);
   }
-  const groups: SessionGroup[] = [];
-  for (const [sessionId, rows] of bySession) {
-    // `entries` arrives newest-first, so within each group rows[0] is the most
-    // recent matching entry and rows[rows.length - 1] the earliest.
+  const groups: CartGroup[] = [];
+  for (const [key, rows] of buckets) {
+    const meta = bucketMeta.get(key)!;
+    // `entries` arrives newest-first, so within each group rows[0] is the
+    // group's most recent matching entry and rows[rows.length - 1] the earliest.
     const withVerdict = rows.find((r) => r.verdict);
-    const created = rows.find((r) => r.event_type === "session_created");
-    const goal = (created?.payload as any)?.nl_goal as string | undefined;
-    const identifying = rows.find(
-      (r) => (r.event_type === "cart_built" || r.event_type === "gate_decision" || r.event_type === "payment_effect") && r.narrative,
-    )?.narrative;
-    const title =
-      identifying
-        ?? (goal && goal !== GENERIC_NL_GOAL ? `"${goal}"` : undefined)
-        ?? rows[rows.length - 1]?.narrative
-        ?? `Session ${sessionId.slice(0, 10)}…`;
     groups.push({
-      sessionId,
+      key,
+      sessionId: meta.sessionId,
+      runId: meta.runId,
       latestTs: rows[0].ts,
-      title,
+      title: titleFor(rows, meta.sessionId),
       verdict: (withVerdict?.verdict as Verdict | undefined) ?? null,
       amountPaise: withVerdict?.amount_paise ?? rows.find((r) => r.amount_paise != null)?.amount_paise ?? null,
       eventCount: rows.length,
@@ -101,18 +121,21 @@ function groupBySession(entries: AuditLogEntry[]): SessionGroup[] {
 }
 
 /** The Audit Trail Viewer — every state transition, rule gate, and monetary
- * effect, grouped by CART (session) so one purchase's whole story reads as one
- * card instead of its stages being scattered across a flat stream. The left
- * list is filterable/searchable across every cart; selecting one shows its
- * full stage-by-stage story on the right. Every value is real backend data
- * from GET /audit; nothing here is fabricated. */
+ * effect, grouped by CART (one purchase attempt) so one purchase's whole
+ * story reads as one card instead of its stages being scattered across a
+ * flat stream, and instead of unrelated attempts sharing a session merging
+ * together. The left list is filterable/searchable across every cart;
+ * selecting one shows its full stage-by-stage story on the right. Every
+ * value is real backend data from GET /audit and GET /mandates/{id}/runs;
+ * nothing here is fabricated. */
 export const AuditPage: React.FC = () => {
   const { sessionId: paramSessionId } = useParams<{ sessionId: string }>();
 
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
+  const [runsByMandate, setRunsByMandate] = useState<Map<string, AgentRun[]>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(paramSessionId ?? null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
   // Filters
@@ -152,21 +175,57 @@ export const AuditPage: React.FC = () => {
     };
   }, [load]);
 
-  const groups = useMemo(() => groupBySession(entries), [entries]);
+  // Fetch the real run windows for every mandate present in the current
+  // (filtered) entries — the authoritative signal `groupByCart` attributes
+  // entries against. Keyed on the STABLE set of mandate ids, not `entries`
+  // itself, so the narration auto-poll's frequent re-fetches don't cause
+  // redundant refetching here.
+  const mandateIds = useMemo(
+    () => [...new Set(entries.map((e) => e.mandate_id))].sort(),
+    [entries],
+  );
+  const mandateIdsKey = mandateIds.join(",");
+  useEffect(() => {
+    if (mandateIds.length === 0) {
+      setRunsByMandate(new Map());
+      return;
+    }
+    let cancelled = false;
+    Promise.all(
+      mandateIds.map((id) => listRuns(id).then((runs) => [id, runs] as const).catch(() => [id, []] as const)),
+    ).then((pairs) => {
+      if (!cancelled) setRunsByMandate(new Map(pairs));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mandateIdsKey]);
+
+  const groups = useMemo(() => groupByCart(entries, runsByMandate), [entries, runsByMandate]);
 
   // Keep a valid selection: default to the most recent cart, clear if the
   // current one no longer matches the active filters. A deep-linked session
-  // (from "View in Audit Ledger") is respected even if it's not in the
-  // CURRENT filtered list — it still loads on the right via its own fetch.
+  // (from "View in Audit Ledger") selects whichever of ITS carts is most
+  // recent, the first time groups become available for it.
   useEffect(() => {
     if (groups.length === 0) {
-      if (!paramSessionId) setSelectedSessionId(null);
+      setSelectedKey(null);
       return;
     }
-    if (!selectedSessionId || (!paramSessionId && !groups.some((g) => g.sessionId === selectedSessionId))) {
-      setSelectedSessionId(groups[0].sessionId);
+    if (paramSessionId && !selectedKey) {
+      const match = groups.find((g) => g.sessionId === paramSessionId);
+      if (match) {
+        setSelectedKey(match.key);
+        return;
+      }
+    }
+    if (!selectedKey || !groups.some((g) => g.key === selectedKey)) {
+      setSelectedKey(groups[0].key);
     }
   }, [groups]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selected = groups.find((g) => g.key === selectedKey) || null;
 
   const toggle = <T,>(list: T[], value: T): T[] =>
     list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
@@ -319,12 +378,12 @@ export const AuditPage: React.FC = () => {
               </div>
             ) : (
               groups.map((g) => {
-                const isSel = g.sessionId === selectedSessionId;
+                const isSel = g.key === selectedKey;
                 return (
                   <button
-                    key={g.sessionId}
+                    key={g.key}
                     type="button"
-                    onClick={() => setSelectedSessionId(g.sessionId)}
+                    onClick={() => setSelectedKey(g.key)}
                     className={`w-full text-left px-4 py-3 transition-colors flex flex-col gap-1.5 cursor-pointer ${
                       isSel ? "bg-[#F3F4F6] border-l-4 border-l-[#111827]" : "hover:bg-[#F9FAFB] border-l-4 border-l-transparent"
                     }`}
@@ -357,7 +416,7 @@ export const AuditPage: React.FC = () => {
 
         {/* Right: the selected cart's full story */}
         <div className="flex-1 w-full min-w-0">
-          <AuditSessionPanel sessionId={selectedSessionId} />
+          <AuditSessionPanel sessionId={selected?.sessionId ?? null} runId={selected?.runId ?? null} />
         </div>
       </div>
     </div>

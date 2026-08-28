@@ -195,3 +195,15 @@ The flat entry-per-row list (previous entry) was more filterable but harder to r
 - Found and fixed a real gap while verifying live: a mandate's `nl_goal` defaults to a generic placeholder ("shop within budget") when none is given, so titling a cart from `nl_goal` alone produced identical-looking labels across many carts. Titles now prefer the `cart_built`/`gate_decision`/`payment_effect` narrative (built from real items/amounts, genuinely distinguishing) and only fall back to `nl_goal` when it's an actual human-typed goal.
 
 Verified: 1 new gateway test + full audit_log_tests suite + offline build, frontend tsc + 26 vitest. Live: two real end-to-end purchases confirmed the flat list and the session_id-filtered fetch return the identical entry set, and confirmed the title fix actually fires against a real generic `nl_goal`.
+
+## Fix audit trail merging unrelated purchases into one cart (2026-08-28)
+
+The just-shipped cart grouping used `session_id` as the group key — but ONE session persists across MANY separate purchase attempts (deliberate; it's how cumulative-budget tracking works). Two unrelated purchases, ~1h40m apart, were merging into one card showing both stories interleaved. User's diagnosis: "the product audit for previous product is also coming... only that cart audit should come."
+
+The real unit meant by "one cart" is a RUN, not a session. Fix: attribute each audit entry to the run that actually produced it, using that run's own authoritative `[created_at, updated_at]` window from `agent_run` — not a guessed time-gap heuristic. No backend change needed — `GET /mandates/{id}/runs` (built earlier this session) already returns exactly this data.
+
+- New `frontend/src/lib/auditGrouping.ts`: `attributeTimestampToRun` — exact window match wins; before-every-run (e.g. session_created) attaches to the earliest run; after-every-window attaches to the latest; null only when a session has no runs at all.
+- `AuditPage`: groups keyed by run_id (session_id fallback only for the no-runs case).
+- `AuditSessionPanel`: takes a `runId` prop, scopes the displayed timeline to that run, while still showing the real `verify_chain()` verdict for the whole session (a session-wide property, correctly left unscoped).
+
+Verified: 5 new unit tests reproducing the exact real timestamps from the bug report + full frontend suite (31) + tsc. Live: two real purchases (shoes + coffee) run in the same session — 11 real audit entries split into exactly 2 correct groups, zero misattribution.

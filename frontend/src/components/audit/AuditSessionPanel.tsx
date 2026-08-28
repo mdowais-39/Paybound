@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
-import { AuditLogEntry } from "../../lib/types";
-import { getAuditLog, getAuditChain } from "../../lib/api";
+import React, { useState, useEffect, useMemo } from "react";
+import { AuditLogEntry, AgentRun } from "../../lib/types";
+import { getAuditLog, getAuditChain, listRuns } from "../../lib/api";
+import { attributeTimestampToRun } from "../../lib/auditGrouping";
 import { getAuditEventMeta } from "../../lib/verdictMeta";
 import { paiseToRupees } from "../../lib/money";
 import { Pill } from "../shared/Pill";
@@ -16,6 +17,12 @@ import {
 
 interface AuditSessionPanelProps {
   sessionId: string | null;
+  /** Scope the story to just this run (one purchase attempt) within the
+   * session — a session persists across many separate attempts, so without
+   * this the timeline would show every unrelated attempt mixed together.
+   * `null` shows the whole session (the fallback case: a session with no
+   * runs recorded at all, e.g. a mandate created but never used). */
+  runId: string | null;
 }
 
 const verdictVariant = (v: string | null): "green" | "amber" | "violet" | "slate" => {
@@ -25,14 +32,18 @@ const verdictVariant = (v: string | null): "green" | "amber" | "violet" | "slate
   return "slate";
 };
 
-/** The right pane's "cart story" view — the full sequence of ONE session's
- * audit entries, read top to bottom like the purchase actually happened
+const GENERIC_NL_GOAL = "shop within budget";
+
+/** The right pane's "cart story" view — the full sequence of ONE purchase
+ * attempt's audit entries, read top to bottom like it actually happened
  * (session created → cart built → gate decision → token issued → payment
- * effect...), instead of that story being scattered across a flat, cross-
- * session list. Click any stage to expand its full detail (narrative, hash-
- * chain link, mandate authority, raw payload) inline. */
-export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId }) => {
-  const [entries, setEntries] = useState<AuditLogEntry[]>([]);
+ * effect...), instead of that story being scattered across a flat list OR
+ * mixed with the session's OTHER, unrelated purchase attempts. Click any
+ * stage to expand its full detail (narrative, hash-chain link, mandate
+ * authority, raw payload) inline. */
+export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId, runId }) => {
+  const [allEntries, setAllEntries] = useState<AuditLogEntry[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
   const [verified, setVerified] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,11 +59,15 @@ export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId 
       ]);
       // getAuditLog returns newest-first (for browsing); a "story" reads
       // chronologically, so reverse it here.
-      setEntries([...rows].reverse());
+      const chronological = [...rows].reverse();
+      setAllEntries(chronological);
       setVerified(chain?.verified ?? null);
+      const mandateId = chronological[0]?.mandate_id;
+      setRuns(mandateId ? await listRuns(mandateId).catch(() => []) : []);
     } catch (e: any) {
       setError(e?.message || "Failed to load this session's audit trail.");
-      setEntries([]);
+      setAllEntries([]);
+      setRuns([]);
     } finally {
       setLoading(false);
     }
@@ -62,13 +77,25 @@ export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId 
     setExpandedId(null);
     if (sessionId) load(sessionId);
     else {
-      setEntries([]);
+      setAllEntries([]);
+      setRuns([]);
       setVerified(null);
     }
   }, [sessionId]);
 
+  // Scope down to just this run's entries (the whole point of the fix: a
+  // session persists across many separate purchase attempts, so without this
+  // the story would show every unrelated attempt mixed together).
+  const entries = useMemo(
+    () =>
+      runId
+        ? allEntries.filter((e) => attributeTimestampToRun(Date.parse(e.ts), runs) === runId)
+        : allEntries,
+    [allEntries, runs, runId],
+  );
+
   // Narration runs in the background on the server — quietly re-fetch a few
-  // times if any loaded entry is still missing its narrative.
+  // times if any DISPLAYED entry is still missing its narrative.
   useEffect(() => {
     if (!sessionId || loading || entries.length === 0) return;
     if (!entries.some((e) => !e.narrative)) return;
@@ -82,9 +109,9 @@ export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId 
         <div className="w-12 h-12 rounded-xl bg-[#F3F4F6] border border-[#E5E7EB] flex items-center justify-center text-[#6B7280] mb-3">
           <ScrollText className="w-6 h-6" />
         </div>
-        <p className="text-sm font-semibold text-[#111827]">Select a cart session</p>
+        <p className="text-sm font-semibold text-[#111827]">Select a cart</p>
         <p className="text-xs text-[#6B7280] mt-1 max-w-[240px]">
-          Pick any session from the left to read its full story — every stage, in order.
+          Pick any cart from the left to read its full story — every stage, in order.
         </p>
       </div>
     );
@@ -100,7 +127,7 @@ export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId 
   const identifying = entries.find(
     (e) => (e.event_type === "cart_built" || e.event_type === "gate_decision" || e.event_type === "payment_effect") && e.narrative,
   )?.narrative;
-  const title = identifying ?? (goal && goal !== "shop within budget" ? `"${goal}"` : undefined);
+  const title = identifying ?? (goal && goal !== GENERIC_NL_GOAL ? `"${goal}"` : undefined);
   const finalVerdictEntry = [...entries].reverse().find((e) => e.verdict);
   const totalPaise = finalVerdictEntry?.amount_paise ?? null;
 
@@ -111,12 +138,14 @@ export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId 
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="min-w-0">
             <div className="font-mono text-[11px] uppercase tracking-wider text-[#6B7280] font-semibold mb-1">
-              Cart Session
+              Cart
             </div>
             <p className="text-sm font-semibold text-[#111827] leading-snug line-clamp-2">
               {title ?? `Session ${sessionId.substring(0, 12)}…`}
             </p>
-            <p className="font-mono text-[11px] text-[#9CA3AF] mt-0.5">{sessionId}</p>
+            <p className="font-mono text-[11px] text-[#9CA3AF] mt-0.5">
+              session {sessionId.substring(0, 12)}…{runId && ` · run ${runId.replace(/^run_/, "").substring(0, 8)}…`}
+            </p>
           </div>
           <div className="flex flex-col items-end gap-1.5 shrink-0">
             {finalVerdictEntry?.verdict && (
@@ -131,8 +160,8 @@ export const AuditSessionPanel: React.FC<AuditSessionPanelProps> = ({ sessionId 
         </div>
         <div className="flex items-center gap-2 pt-2 border-t border-[#F3F4F6] text-[11px] font-mono">
           {verified === true && (
-            <span className="inline-flex items-center gap-1 text-[#059669] font-semibold">
-              <ShieldCheck className="w-3.5 h-3.5" /> Chain verified
+            <span className="inline-flex items-center gap-1 text-[#059669] font-semibold" title="The whole session's hash chain — every cart within it — verifies untampered">
+              <ShieldCheck className="w-3.5 h-3.5" /> Session chain verified
             </span>
           )}
           {verified === false && (
