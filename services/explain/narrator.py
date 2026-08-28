@@ -8,7 +8,16 @@ narrative is a separate persisted field that is NOT part of the hash (so adding
 it never affects `verify_chain`). A narrative can therefore never change a money
 outcome — at worst it is a bad description, caught by the spot-check.
 
-Run: python -m services.explain.narrator <session_id>
+Wired into the live pipeline as a fire-and-forget background call after every
+agent-API purchase step (see services/api/main.py `_narrate_async`) — a Gemini
+call never adds latency to the user-facing purchase response, and a narration
+failure never surfaces to the user (`narrate_entry` degrades to a deterministic
+sentence on its own).
+
+Run by hand: python -m services.explain.narrator <session_id>
+        or:  python -m services.explain.narrator --all   (backfill every
+             session with any not-yet-narrated entry, e.g. after enabling
+             this for the first time, or recovering from an outage)
 """
 
 from __future__ import annotations
@@ -81,11 +90,23 @@ class Narrator:
                 narrated += 1
         return narrated
 
+    def narrate_all_pending(self) -> int:
+        """Narrate every not-yet-narrated entry across ALL sessions — a one-time
+        backfill for entries recorded before narration was wired into the live
+        pipeline (or a recovery sweep after an outage). Returns the total count."""
+        import psycopg
+
+        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT session_id FROM audit_entry WHERE narrative IS NULL")
+            session_ids = [str(r[0]) for r in cur.fetchall()]
+        return sum(self.narrate_session(sid) for sid in session_ids)
+
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("usage: python -m services.explain.narrator <session_id>", file=sys.stderr)
-        return 2
+    if len(sys.argv) < 2 or sys.argv[1] == "--all":
+        n = Narrator().narrate_all_pending()
+        print(f"narrated {n} audit entries across all pending sessions")
+        return 0
     n = Narrator().narrate_session(sys.argv[1])
     print(f"narrated {n} audit entries for session {sys.argv[1]}")
     return 0

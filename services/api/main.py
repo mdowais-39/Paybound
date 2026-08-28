@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import uuid
 
 from fastapi import FastAPI, Header, HTTPException
@@ -31,6 +32,7 @@ from ..agent.mcp_client import HttpMcpClient
 from ..agent.ml_loader import load_confidence, load_relevance, load_upsell
 from ..agent.orchestrator import Orchestrator
 from ..agent.tracing import flush, init_tracing
+from ..explain.narrator import Narrator
 
 logger = logging.getLogger("paybound.api")
 
@@ -62,6 +64,10 @@ def _startup() -> None:
     _state["upsell"] = upsell
     _state["confidence"] = confidence
     _state["tracer"] = init_tracing()
+    # Built once, like the ML models above — narrate_session opens its own DB
+    # connection per call, so one shared instance is just avoiding repeated
+    # GeminiLLM construction.
+    _state["narrator"] = Narrator()
 
 
 @app.on_event("shutdown")
@@ -172,6 +178,31 @@ def _record_run(session_id: str, run_id: str | None, goal: str | None, rj: dict)
         logger.warning("record_run failed for session %s (non-fatal)", session_id, exc_info=True)
 
 
+def _narrate_async(session_id: str) -> None:
+    """Fire-and-forget: narrate this session's not-yet-narrated audit entries
+    (the ones this step's checkout/gate call just appended) in a background
+    thread, so a Gemini call never adds latency to the user-facing purchase
+    response. Best-effort — `Narrator.narrate_entry` already degrades to a
+    deterministic sentence on its own when Gemini is unavailable, so this only
+    guards against something unexpected (e.g. a DB hiccup)."""
+    def _run() -> None:
+        try:
+            _state["narrator"].narrate_session(session_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("narrate_async failed for session %s (non-fatal)", session_id, exc_info=True)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _after_step(session_id: str, run_id: str | None, goal: str | None, rj: dict) -> None:
+    """Everything that should follow an orchestrator step but must never delay
+    or break the user-facing response: log it to the console-history table,
+    and kick off background narration of whatever new audit entries this step
+    just appended."""
+    _record_run(session_id, run_id, goal, rj)
+    _narrate_async(session_id)
+
+
 def _sse_response(session_id: str, span_name: str, work, record=None):
     """Stream genuine pipeline-stage events over SSE while `work(orch, on_stage)`
     runs the (blocking) orchestrator in a worker thread. Each real stage
@@ -241,7 +272,7 @@ def run_session_stream(session_id: str, req: RunRequest, authorization: str | No
         session_id,
         "purchase",
         lambda orch, on: orch.run(session_id, req.goal, on_stage=on),
-        record=lambda rj: _record_run(session_id, req.run_id, req.goal, rj),
+        record=lambda rj: _after_step(session_id, req.run_id, req.goal, rj),
     )
 
 
@@ -254,7 +285,7 @@ def select_stream(session_id: str, req: SelectRequest, authorization: str | None
         session_id,
         "select",
         lambda orch, on: orch.select(session_id, req.item_id, on_stage=on),
-        record=lambda rj: _record_run(session_id, req.run_id, req.goal, rj),
+        record=lambda rj: _after_step(session_id, req.run_id, req.goal, rj),
     )
 
 
@@ -269,7 +300,7 @@ def resolve_upsell_stream(session_id: str, req: UpsellRequest, authorization: st
         lambda orch, on: orch.resolve_upsell(
             session_id, req.item_id, req.accept, addon_item_id=req.addon_item_id, on_stage=on
         ),
-        record=lambda rj: _record_run(session_id, req.run_id, req.goal, rj),
+        record=lambda rj: _after_step(session_id, req.run_id, req.goal, rj),
     )
 
 
@@ -296,7 +327,7 @@ def run_session(session_id: str, req: RunRequest, authorization: str | None = He
         logger.exception("agent run failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
     rj = _result_json(orch, result, trace_id)
-    _record_run(session_id, req.run_id, req.goal, rj)
+    _after_step(session_id, req.run_id, req.goal, rj)
     return rj
 
 
@@ -323,7 +354,7 @@ def select_option(session_id: str, req: SelectRequest, authorization: str | None
         logger.exception("agent select failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
     rj = _result_json(orch, result, trace_id)
-    _record_run(session_id, req.run_id, req.goal, rj)
+    _after_step(session_id, req.run_id, req.goal, rj)
     return rj
 
 
@@ -353,7 +384,7 @@ def resolve_upsell(session_id: str, req: UpsellRequest, authorization: str | Non
         logger.exception("agent upsell resolution failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
     rj = _result_json(orch, result, trace_id)
-    _record_run(session_id, req.run_id, req.goal, rj)
+    _after_step(session_id, req.run_id, req.goal, rj)
     return rj
 
 
@@ -380,5 +411,5 @@ def approve_session(session_id: str, req: ApproveRequest, authorization: str | N
         logger.exception("agent approve failed")
         raise HTTPException(status_code=500, detail=str(e)) from e
     rj = _result_json(orch, result, trace_id)
-    _record_run(session_id, req.run_id, req.goal, rj)
+    _after_step(session_id, req.run_id, req.goal, rj)
     return rj

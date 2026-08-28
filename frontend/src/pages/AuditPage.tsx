@@ -47,6 +47,38 @@ export const AuditPage: React.FC = () => {
     load();
   }, [load]);
 
+  // Narration runs in the background on the server (a Gemini call per entry,
+  // fired off after each purchase step so it never delays the response) — so
+  // a freshly-loaded chain can show entries without a narrative yet for a few
+  // seconds. Poll quietly until every entry has one, instead of leaving the
+  // user to guess that clicking Refresh would help. Capped (~36s) so a genuine
+  // outage doesn't poll forever; the Refresh button always still works.
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const pollUntilNarrated = async (attempt: number) => {
+      if (cancelled || attempt > 12) return;
+      try {
+        const fresh = await getAuditChain(sessionId);
+        if (cancelled) return;
+        setChain(fresh);
+        if (fresh.entries.some((e) => !e.narrative)) {
+          timer = setTimeout(() => pollUntilNarrated(attempt + 1), 3000);
+        }
+      } catch {
+        // Transient hiccup — stop quietly; the Refresh button still works.
+      }
+    };
+
+    timer = setTimeout(() => pollUntilNarrated(1), 3000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [sessionId]);
+
   return (
     <div id="page-audit" className="flex flex-col gap-6">
       {/* Header */}
