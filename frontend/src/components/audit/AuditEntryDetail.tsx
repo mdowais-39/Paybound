@@ -130,16 +130,22 @@ export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFil
               {new Date(entry.ts).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" })}
             </span>
           </Row>
-          <Row label="Session">
-            <button
-              type="button"
-              onClick={() => onFilterSession?.(entry.session_id)}
-              className="font-mono text-xs text-[#2563EB] hover:underline inline-flex items-center gap-1 cursor-pointer"
-              title="Show only this session's events"
-            >
-              {entry.session_id.substring(0, 12)}… <Filter className="w-3 h-3" />
-            </button>
-          </Row>
+          {onFilterSession ? (
+            <Row label="Session">
+              <button
+                type="button"
+                onClick={() => onFilterSession(entry.session_id)}
+                className="font-mono text-xs text-[#2563EB] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                title="Show only this session's events"
+              >
+                {entry.session_id.substring(0, 12)}… <Filter className="w-3 h-3" />
+              </button>
+            </Row>
+          ) : (
+            <Row label="Session">
+              <span className="font-mono text-xs">{entry.session_id.substring(0, 12)}…</span>
+            </Row>
+          )}
         </div>
       </Section>
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT a.entry_id, a.seq, a.session_id, m.mandate_id,\n                  a.event_type,\n                  a.payload->>'verdict'      AS verdict,\n                  a.payload->>'rule_cited'   AS rule_cited,\n                  (a.payload->>'amount_paise')::bigint AS amount_paise,\n                  a.narrative, a.prev_hash, a.this_hash, a.payload, a.ts\n           FROM audit_entry a\n           JOIN purchase_session s ON s.session_id = a.session_id\n           JOIN intent_mandate m   ON m.mandate_id = s.mandate_id\n           WHERE (m.owner_token_hash IS NULL OR m.owner_token_hash = $1)\n             AND ($2::text[] IS NULL OR a.event_type = ANY($2))\n             AND ($3::text[] IS NULL OR a.payload->>'verdict' = ANY($3))\n             AND ($4::timestamptz IS NULL OR a.ts >= $4)\n             AND ($5::text IS NULL\n                  OR lower(a.session_id::text) LIKE $5\n                  OR lower(m.mandate_id::text) LIKE $5\n                  OR lower(coalesce(a.narrative, '')) LIKE $5\n                  OR lower(a.payload::text) LIKE $5)\n           ORDER BY a.ts DESC, a.seq DESC\n           LIMIT $6",
+  "query": "SELECT a.entry_id, a.seq, a.session_id, m.mandate_id,\n                  a.event_type,\n                  a.payload->>'verdict'      AS verdict,\n                  a.payload->>'rule_cited'   AS rule_cited,\n                  (a.payload->>'amount_paise')::bigint AS amount_paise,\n                  a.narrative, a.prev_hash, a.this_hash, a.payload, a.ts\n           FROM audit_entry a\n           JOIN purchase_session s ON s.session_id = a.session_id\n           JOIN intent_mandate m   ON m.mandate_id = s.mandate_id\n           WHERE (m.owner_token_hash IS NULL OR m.owner_token_hash = $1)\n             AND ($2::text[] IS NULL OR a.event_type = ANY($2))\n             AND ($3::text[] IS NULL OR a.payload->>'verdict' = ANY($3))\n             AND ($4::timestamptz IS NULL OR a.ts >= $4)\n             AND ($5::text IS NULL\n                  OR lower(a.session_id::text) LIKE $5\n                  OR lower(m.mandate_id::text) LIKE $5\n                  OR lower(coalesce(a.narrative, '')) LIKE $5\n                  OR lower(a.payload::text) LIKE $5)\n             AND ($7::uuid IS NULL OR a.session_id = $7)\n           ORDER BY a.ts DESC, a.seq DESC\n           LIMIT $6",
   "describe": {
     "columns": [
       {
@@ -76,7 +76,8 @@
         "TextArray",
         "Timestamptz",
         "Text",
-        "Int8"
+        "Int8",
+        "Uuid"
       ]
     },
     "nullable": [
@@ -95,5 +96,5 @@
       false
     ]
   },
-  "hash": "4fade72585b8b98d583a9faa298af35d0057f79bab5c81d346e642e4f77d377c"
+  "hash": "2a195168f84850aad01a36b7cfbba0f27e72bf93854a2efa12aa2e4cb7779d72"
 }

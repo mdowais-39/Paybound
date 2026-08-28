@@ -127,6 +127,12 @@ async fn audit_log_flattens_across_sessions_and_filters(pool: PgPool) {
     // Free-text search over the payload.
     let (_, body) = send(&a, "/audit?q=over_per_txn_cap", "owner").await;
     assert_eq!(body["entry_count"], 1);
+
+    // Exact session_id filter — the "cart story" view fetches ALL of one
+    // session's entries, independent of the other filters.
+    let (_, body) = send(&a, &format!("/audit?session_id={s1}"), "owner").await;
+    assert_eq!(body["entry_count"], 2);
+    assert!(body["entries"].as_array().unwrap().iter().all(|e| e["session_id"] == s1.to_string()));
 }
 
 #[sqlx::test(migrations = "../../migrations")]

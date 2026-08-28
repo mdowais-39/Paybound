@@ -420,12 +420,15 @@ pub struct AuditLogRow {
 }
 
 /// Filters for the cross-session audit log. All optional (None = no filter on
-/// that axis). `event_types`/`verdicts` empty means "any".
+/// that axis). `event_types`/`verdicts` empty means "any". `session_id` is an
+/// exact match — used to fetch one session's full, rich-shaped entry set (e.g.
+/// for a "cart story" detail view), independent of the other filters.
 pub struct AuditLogFilter<'a> {
     pub event_types: &'a [String],
     pub verdicts: &'a [String],
     pub since: Option<OffsetDateTime>,
     pub search: Option<&'a str>,
+    pub session_id: Option<Uuid>,
 }
 
 /// Every audit entry across ALL of an owner's sessions, newest-first, with
@@ -466,6 +469,7 @@ pub async fn list_audit_log(
                   OR lower(m.mandate_id::text) LIKE $5
                   OR lower(coalesce(a.narrative, '')) LIKE $5
                   OR lower(a.payload::text) LIKE $5)
+             AND ($7::uuid IS NULL OR a.session_id = $7)
            ORDER BY a.ts DESC, a.seq DESC
            LIMIT $6"#,
         owner_token_hash,
@@ -474,6 +478,7 @@ pub async fn list_audit_log(
         filter.since,
         search.as_deref(),
         limit,
+        filter.session_id,
     )
     .fetch_all(pool)
     .await

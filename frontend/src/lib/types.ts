@@ -203,12 +203,15 @@ export interface AuditLogEntry {
   ts: string;
 }
 
-/** Filters for the audit log — all optional. */
+/** Filters for the audit log — all optional. `sessionId` is an exact match,
+ * independent of the other filters — used to fetch one session's full "cart
+ * story" entry set. */
 export interface AuditLogFilters {
   eventTypes?: AuditEventType[];
   verdicts?: Verdict[];
   days?: number;
   q?: string;
+  sessionId?: string;
 }
 
 /** The mandate authority behind one audit entry (GET /audit/entries/{id}/context). */

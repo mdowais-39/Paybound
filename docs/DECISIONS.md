@@ -185,3 +185,13 @@ The old Audit page could only answer "what happened in this ONE session": pick a
 - Deleted the now-orphaned `AuditTimeline` / `AuditEntryCard` / `VerifyBadge` components (dead code; git history preserves them). Background narration auto-poll carried over to the new page.
 
 **Verified:** 3 new gateway integration tests (flatten across sessions + each filter; owner-scoping returns an empty log to an intruder, not another owner's entries; entry-context returns mandate authority and 403s a non-owner) + full gateway suite + offline build, frontend tsc + 26 vitest. Live: every filter returns correct real data against the DB (event_type=gate_decision → 44, verdict=refused → 7, payment_effect → 37, q=over_per_txn_cap → 3, each with payload-lifted verdict/amount), and 401 without a token. (Could not screenshot the rendered UI — the page is Firebase-login-gated and the browser pane doesn't composite in this session — so the visual itself is unverified; the data layer behind it is proven.)
+
+## Group Audit Trail by cart instead of one row per stage (2026-08-28)
+
+The flat entry-per-row list (previous entry) was more filterable but harder to read: one purchase's whole story was scattered across separate interleaved rows, mixed with every other cart's stages. User's own words: "one cart shopping tab, for which all the audit stages will be shown."
+
+- Backend: an exact `session_id` filter added to `GET /audit` (alongside event_type/verdict/days/q) fetches one session's full, rich-shaped entry set independent of the browsing filters — no new endpoint needed.
+- Frontend: the left list now groups filtered entries by session_id client-side into one card per cart (title, verdict, amount, stage count). A new `AuditSessionPanel` (right pane) renders one cart's full entry set as a connected vertical timeline read top to bottom, each stage expanding inline to its full detail via the existing `AuditEntryDetail` (no duplicated rendering). The real `verify_chain()` verdict is still shown per cart.
+- Found and fixed a real gap while verifying live: a mandate's `nl_goal` defaults to a generic placeholder ("shop within budget") when none is given, so titling a cart from `nl_goal` alone produced identical-looking labels across many carts. Titles now prefer the `cart_built`/`gate_decision`/`payment_effect` narrative (built from real items/amounts, genuinely distinguishing) and only fall back to `nl_goal` when it's an actual human-typed goal.
+
+Verified: 1 new gateway test + full audit_log_tests suite + offline build, frontend tsc + 26 vitest. Live: two real end-to-end purchases confirmed the flat list and the session_id-filtered fetch return the identical entry set, and confirmed the title fix actually fires against a real generic `nl_goal`.

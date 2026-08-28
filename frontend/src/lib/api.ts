@@ -137,6 +137,7 @@ export async function getAuditLog(filters: AuditLogFilters = {}): Promise<AuditL
   if (filters.verdicts?.length) params.set("verdict", filters.verdicts.join(","));
   if (filters.days) params.set("days", String(filters.days));
   if (filters.q?.trim()) params.set("q", filters.q.trim());
+  if (filters.sessionId) params.set("session_id", filters.sessionId);
   const qs = params.toString();
   const res = await authFetch(`${GATEWAY_URL}/audit${qs ? `?${qs}` : ""}`);
   const data = await asJson(res, "getAuditLog");

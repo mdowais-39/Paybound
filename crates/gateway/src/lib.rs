@@ -161,6 +161,9 @@ struct AuditLogQuery {
     days: Option<i64>,
     q: Option<String>,
     limit: Option<i64>,
+    /// Exact-match filter — fetches one session's full, rich-shaped entry set
+    /// (a "cart story"), independent of the other filters.
+    session_id: Option<Uuid>,
 }
 
 /// Split a comma-separated filter param into a trimmed, non-empty OR-list.
@@ -201,6 +204,7 @@ async fn audit_log(
         verdicts: &verdicts,
         since,
         search,
+        session_id: q.session_id,
     };
     let rows = repos::list_audit_log(&s.pool, &owner_hash, &filter, limit)
         .await
