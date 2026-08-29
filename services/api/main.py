@@ -307,7 +307,8 @@ def get_campaign_offer(session_id: str, authorization: str | None = Header(None)
         engine = CampaignEngine(orch.cart_composer, _state["mcp"])
         running_spend = store.running_spend(session_id)
         runs = store.list_runs(mandate_id)
-        offer = engine.evaluate(mandate, running_spend, runs, datetime.now(UTC))
+        dismissed = store.dismissed_item_ids(mandate_id)
+        offer = engine.evaluate(mandate, running_spend, runs, datetime.now(UTC), dismissed)
     except Exception:  # noqa: BLE001 — a nudge is best-effort; never break the console
         logger.warning("campaign evaluate failed for session %s (non-fatal)", session_id, exc_info=True)
         return {"offer": None}

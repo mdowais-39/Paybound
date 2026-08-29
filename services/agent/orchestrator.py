@@ -265,10 +265,15 @@ class Orchestrator(BaseAgent):
             if addon is not None:
                 return OrchestratorResult(
                     state="UPSELL",
+                    # Same "customers often pair X with Y" phrasing as the
+                    # campaign orchestrator's nudges (services/campaign/engine.py)
+                    # — a suggestion with no stated reason reads as an upsell
+                    # push, not a genuine recommendation.
                     message=(
-                        f"Want to add {addon.get('title', 'this item')} "
-                        f"({self._rupees(addon['price_paise'])}) too? It's optional — "
-                        f"your call."
+                        f"You're getting {candidate.title}. Customers often pair it with "
+                        f"{addon.get('title', 'this item')} "
+                        f"({self._rupees(addon['price_paise'])}) — want to add it too? "
+                        f"It's optional, your call."
                     ),
                     cart_id=cart.cart_id,
                     amount_paise=cart.total_paise,

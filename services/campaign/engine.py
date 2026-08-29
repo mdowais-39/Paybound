@@ -55,11 +55,15 @@ class CampaignEngine:
         running_spend_paise: int,
         runs: list[dict],
         now: datetime,
+        dismissed_item_ids: set[str] | None = None,
     ) -> CampaignOffer | None:
         """Return at most one offer. `runs` is the mandate's agent_run history,
         NEWEST-FIRST (as `agent_run` is indexed). Re-checks the mandate's
         CURRENT bounds — a nudge is never proposed for a mandate that can no
-        longer spend, even if it could when the original purchase happened."""
+        longer spend, even if it could when the original purchase happened.
+        `dismissed_item_ids` excludes items already explicitly turned down —
+        the 24h cooldown alone only blocks a NEW nudge of any kind; it doesn't
+        remember which specific item was declined."""
         # Bound re-check: expired or fully-spent mandates get no nudge. (A
         # revoked mandate never reaches here — the route wouldn't resolve it —
         # but TTL and remaining budget are re-verified regardless.)
@@ -74,14 +78,18 @@ class CampaignEngine:
         if not completed:
             return None
 
-        return self._complete_the_set(mandate, remaining, completed) or self._win_back(
-            completed, now
-        )
+        return self._complete_the_set(
+            mandate, remaining, completed, dismissed_item_ids or set()
+        ) or self._win_back(completed, now)
 
     # --- Rule A: complete the set (cross-sell) -----------------------------
 
     def _complete_the_set(
-        self, mandate: dict, remaining: int, completed: list[dict]
+        self,
+        mandate: dict,
+        remaining: int,
+        completed: list[dict],
+        dismissed_item_ids: set[str],
     ) -> CampaignOffer | None:
         last = completed[0]  # newest completed purchase
         item_id = self._primary_item_id(last)
@@ -113,6 +121,9 @@ class CampaignEngine:
         # Don't nudge a category the customer has already bought before.
         already = {c for r in completed for c in self._categories(r)}
         if addon["category"] in already:
+            return None
+        # Don't re-propose an item this mandate already explicitly declined.
+        if addon["item_id"] in dismissed_item_ids:
             return None
 
         return CampaignOffer(

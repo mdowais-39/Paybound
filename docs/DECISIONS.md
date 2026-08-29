@@ -243,3 +243,12 @@ The one PS-named direction the build hadn't touched. A *full* marketing system (
 Explicitly out of scope (documented in the plan): no email/SMS/push, no scheduler, no outcome-learning loop, no rule types beyond the two — the engine is structured so a third rule is additive.
 
 **Verified:** 7 engine unit tests (both rules fire correctly, the already-bought-category and <14-day guards suppress, budget-exhausted / expired-mandate / no-completed-purchase all return None) + full python suite (53) + ruff, frontend tsc + 31 vitest, and a new Rust `sqlx::test` run confirming the migration applies cleanly in isolated test DBs. Live end-to-end (dry-run): a real shoe purchase produced a genuine `complete_the_set` nudge referencing the actual item bought and a real in-stock complement, persisted across reloads, and the 24h cooldown correctly suppressed a fresh one after dismissal.
+
+## Upsell/cross-sell: stated reasons everywhere, no re-nagging (2026-08-28)
+
+Follow-up analysis of upsell/cross-sell surfaced two real, cheap wins:
+
+1. **A genuine inconsistency the campaign orchestrator had just introduced**: its nudges state a reason ("Customers often pair it with..."), but the in-cart UPSELL prompt during checkout still said "Want to add X too? It's optional — your call." with no reason at all — reading as a push, not a recommendation. Fixed: the same "You're getting X. Customers often pair it with Y" phrasing now applies to both surfaces (`orchestrator.py`'s UPSELL message).
+2. **The campaign engine's 24h cooldown only blocked a new nudge of *any* kind — not the same declined item reappearing** once the cooldown passed. Added `CampaignStore.dismissed_item_ids` (queries `campaign_offer` for this mandate's dismissed rows) threaded through `CampaignEngine.evaluate`; `_complete_the_set` now excludes any complement already explicitly turned down, falling through to win-back rather than returning nothing.
+
+**Verified:** 1 new engine test (dismissed item excluded; the same setup fires without the exclusion, proving the guard is real) + full python suite (54) + ruff. Live end-to-end (dry-run): confirmed the in-cart UPSELL message now states a real reason for a genuine purchase, and confirmed — after manually aging a dismissed offer past the 24h cooldown — the engine correctly did not re-propose that exact item on a fresh evaluation.

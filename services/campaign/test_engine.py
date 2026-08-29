@@ -90,6 +90,18 @@ def test_complete_the_set_suppressed_when_category_already_bought():
     assert engine.evaluate(mandate(), 0, runs, NOW) is None
 
 
+def test_complete_the_set_does_not_re_propose_a_dismissed_item():
+    """The 24h cooldown alone blocks a fresh nudge of ANY kind — this guards
+    the sharper thing: don't re-offer the SAME item once it's been explicitly
+    declined, even after the cooldown has passed. Falls through to win-back
+    (silent here, since the purchase is fresh) rather than returning nothing."""
+    engine = _engine({"sporting goods": [SPORT]})
+    runs = [run("AUTHORIZED", SHOE, NOW)]
+    assert engine.evaluate(mandate(), 0, runs, NOW, dismissed_item_ids={SPORT["item_id"]}) is None
+    # Without the exclusion, the same setup DOES fire — proves the guard is real.
+    assert engine.evaluate(mandate(), 0, runs, NOW) is not None
+
+
 # --- Rule B: win-back ------------------------------------------------------
 
 def test_win_back_fires_past_the_threshold():

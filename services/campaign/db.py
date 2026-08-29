@@ -48,6 +48,20 @@ class CampaignStore:
             rows = cur.fetchall()
         return [{"state": r[0], "result_json": r[1], "created_at": r[2]} for r in rows]
 
+    def dismissed_item_ids(self, mandate_id: str) -> set[str]:
+        """Every item this mandate has already explicitly dismissed a nudge
+        for — the engine excludes these so a declined suggestion doesn't keep
+        reappearing on a later evaluation (the 24h cooldown alone only blocks
+        a NEW nudge of any kind; it doesn't remember which specific item was
+        turned down)."""
+        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT DISTINCT item_id FROM campaign_offer
+                   WHERE mandate_id = %s AND status = 'dismissed' AND item_id IS NOT NULL""",
+                (mandate_id,),
+            )
+            return {str(r[0]) for r in cur.fetchall()}
+
     def recent_offer(self, mandate_id: str, within_hours: int = 24) -> dict | None:
         """The most recent offer for this mandate inside the cooldown window,
         or None. Used to (a) keep re-showing an un-resolved offer across page
