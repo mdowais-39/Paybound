@@ -149,12 +149,20 @@ pub struct CartMandate {
 
 /// AP2 Payment Mandate — records the agent-presence signal and the authority
 /// reference alongside the actual charge, so money movement carries its
-/// justification into the ledger.
+/// justification into the ledger. Written once per real charge attempt, in
+/// `execution::ExecutionPlane::authorize` — the same place `payment_effect`
+/// and the delegated token are created (see `migrations/0006_payment_mandate.sql`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentMandate {
-    pub authority_ref: Uuid, // the Intent Mandate id
-    pub agent_present: bool, // false = human-not-present agentic transaction
-    pub cart_hash: String,
+    pub authority_ref: Uuid, // the Intent Mandate id this charge was authorized under
+    /// Always `true` in this system: every checkout goes through the agent
+    /// orchestrator — there is no path where a human transacts directly
+    /// without it. Kept as its own signal (rather than assumed) because AP2
+    /// downstream parties (card networks, issuers) use it for their own
+    /// risk/liability decisioning, and a system that DID support a
+    /// human-present checkout path would need to set this per-transaction.
+    pub agent_present: bool,
+    pub cart_hash: String, // ties this exact charge to the exact cart the kernel approved
 }
 
 #[cfg(test)]

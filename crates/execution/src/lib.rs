@@ -138,6 +138,23 @@ impl ExecutionPlane {
         .await
         .map_err(db)?;
 
+        // AP2 Payment Mandate — the third tier of the AP2 chain (Intent ->
+        // Cart -> Payment). One row per real charge attempt, tying it back to
+        // the exact Intent Mandate that authorized it and the exact cart
+        // hash the kernel approved, so the chain is queryable end to end
+        // rather than only informally reconstructible from scattered fields.
+        sqlx::query!(
+            "INSERT INTO payment_mandate (effect_id, authority_ref, agent_present, cart_hash)
+             VALUES ($1, $2, $3, $4)",
+            effect_id,
+            auth.mandate_id,
+            true,
+            auth.cart_hash,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+
         // Commit this amount against the mandate's cumulative budget NOW, at
         // authorization — not when a `payment_link.paid` webhook eventually
         // arrives. The kernel's over_cumulative_budget check reads this same

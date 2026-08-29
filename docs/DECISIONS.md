@@ -218,3 +218,13 @@ Considered a narrative-only fix (explain the duplicate in the entry's text) but 
 - `main.py` / `api.ts` / `ShopPage.tsx`: thread the UPSELL result's own `cart_id` through to resolution.
 
 Verified: 1 new orchestrator test (decline reuses the exact cart_id, `create_cart` called exactly once) + full python suite (48) + ruff, frontend tsc. Live: real UPSELL flow through the actual backend — declining now produces exactly one `cart_built` entry, checked-out cart_id matches the original pause exactly.
+
+## Close the AP2 Payment Mandate gap (2026-08-28)
+
+Auditing what this codebase actually implements from AP2's three-tier mandate chain (Intent → Cart → Payment) surfaced a real gap: `domain::PaymentMandate` (`crates/domain/src/mandate.rs`) was fully modeled — `authority_ref`, `agent_present`, `cart_hash`, matching AP2's own third tier exactly — but never actually constructed anywhere. The information it should carry was only ever scattered across `gate_decision`'s payload and the session→mandate foreign key, never assembled into one first-class record the way `intent_mandate` and `cart_mandate` already are.
+
+**Fix:** a genuine `payment_mandate` table (`migrations/0006_payment_mandate.sql`), one row per real charge attempt (1:1 with `payment_effect` via a unique index), written in `ExecutionPlane::authorize()` at the exact same point `payment_effect` and the delegated token are created. `agent_present` is `true` uniformly — documented as such, since every checkout in this system goes through the agent orchestrator; there's no path where a human transacts directly without it.
+
+Fixing this exposed a real pre-existing test inaccuracy: `crates/gateway/tests/webhook_tests.rs` constructed its `Authorization` with a random, never-seeded `mandate_id` — harmless before nothing enforced that link, but now correctly caught by the new foreign key. Fixed the test fixtures to use the real seeded mandate id.
+
+**Verified:** 2 new execution-plane tests (the mandate is written correctly on every real charge; a retry doesn't write a duplicate) + full workspace test suite + offline build. Live end-to-end in dry-run mode: a real purchase (CHOOSE → select → UPSELL decline → AUTHORIZED) produced a `payment_mandate` row with `authority_ref` exactly matching the real Intent Mandate, `agent_present=true`, and the real `cart_hash`, correctly linked via `effect_id`.

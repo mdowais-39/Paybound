@@ -50,7 +50,7 @@ impl PaymentGateway for FakeGateway {
     }
 }
 
-async fn seed_session(pool: &PgPool) -> Uuid {
+async fn seed_session(pool: &PgPool) -> (Uuid, Uuid) {
     let merchant = repos::create_merchant(pool, "Acme", &json!(["upi"]))
         .await
         .unwrap();
@@ -73,14 +73,15 @@ async fn seed_session(pool: &PgPool) -> Uuid {
     )
     .await
     .unwrap();
-    repos::create_session(pool, mandate_id).await.unwrap()
+    let session = repos::create_session(pool, mandate_id).await.unwrap();
+    (session, mandate_id)
 }
 
 const SECRET: &str = "whsec_paybound_test";
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn signed_paid_webhook_completes_session_bad_signature_rejected(pool: PgPool) {
-    let session = seed_session(&pool).await;
+    let (session, mandate_id) = seed_session(&pool).await;
 
     // Authorize to get a pending payment_effect with a known razorpay_ref.
     let exec = ExecutionPlane::new(
@@ -89,7 +90,7 @@ async fn signed_paid_webhook_completes_session_bad_signature_rejected(pool: PgPo
         ExecConfig::default(),
     );
     let auth = Authorization {
-        mandate_id: Uuid::new_v4(),
+        mandate_id,
         cart_hash: "h".into(),
         amount_paise: 285_000,
     };
@@ -147,14 +148,14 @@ async fn signed_paid_webhook_completes_session_bad_signature_rejected(pool: PgPo
 
 #[sqlx::test(migrations = "../../migrations")]
 async fn duplicate_webhook_is_deduped(pool: PgPool) {
-    let session = seed_session(&pool).await;
+    let (session, mandate_id) = seed_session(&pool).await;
     let exec = ExecutionPlane::new(
         pool.clone(),
         std::sync::Arc::new(FakeGateway),
         ExecConfig::default(),
     );
     let auth = Authorization {
-        mandate_id: Uuid::new_v4(),
+        mandate_id,
         cart_hash: "h".into(),
         amount_paise: 285_000,
     };

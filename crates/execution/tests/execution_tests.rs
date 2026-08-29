@@ -110,6 +110,51 @@ async fn authorize_creates_a_payment_link_and_moves_to_paying(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../../migrations")]
+async fn authorize_writes_the_ap2_payment_mandate(pool: PgPool) {
+    // The third tier of the AP2 chain (Intent -> Cart -> Payment): every real
+    // charge must leave behind a payment_mandate row tying it back to the
+    // exact Intent Mandate that authorized it and the exact cart hash the
+    // kernel approved -- not just informally reconstructible from scattered
+    // fields elsewhere.
+    let (session, mandate) = seed_session(&pool).await;
+    let gw = FakeGateway::default();
+    let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
+    let a = auth(mandate, 285_000);
+
+    let r = exec.authorize(session, &a).await.unwrap();
+
+    let row = sqlx::query!(
+        "SELECT authority_ref, agent_present, cart_hash FROM payment_mandate WHERE effect_id = $1",
+        r.payment_effect_id,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.authority_ref, mandate, "must reference the Intent Mandate that authorized this charge");
+    assert!(row.agent_present, "every checkout in this system is agent-driven");
+    assert_eq!(row.cart_hash, a.cart_hash, "must tie to the exact cart the kernel approved");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn duplicate_authorize_writes_only_one_payment_mandate(pool: PgPool) {
+    let (session, mandate) = seed_session(&pool).await;
+    let gw = FakeGateway::default();
+    let exec = ExecutionPlane::new(pool.clone(), std::sync::Arc::new(gw), ExecConfig::default());
+    let a = auth(mandate, 285_000);
+
+    let r1 = exec.authorize(session, &a).await.unwrap();
+    let r2 = exec.authorize(session, &a).await.unwrap(); // retry, same idempotency key
+    assert_eq!(r1.payment_effect_id, r2.payment_effect_id);
+
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM payment_mandate WHERE effect_id = $1")
+        .bind(r1.payment_effect_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "a retry must not write a second payment_mandate row");
+}
+
+#[sqlx::test(migrations = "../../migrations")]
 async fn duplicate_authorize_does_not_double_charge(pool: PgPool) {
     let (session, mandate) = seed_session(&pool).await;
     let gw = FakeGateway::default();

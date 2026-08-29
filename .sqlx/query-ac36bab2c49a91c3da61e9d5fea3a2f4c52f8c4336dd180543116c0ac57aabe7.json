@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO payment_mandate (effect_id, authority_ref, agent_present, cart_hash)\n             VALUES ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ac36bab2c49a91c3da61e9d5fea3a2f4c52f8c4336dd180543116c0ac57aabe7"
+}
