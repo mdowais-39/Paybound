@@ -15,6 +15,7 @@ import {
   AuditLogEntry,
   AuditLogFilters,
   AuditEntryContext,
+  CampaignOffer,
   OrchestratorResult,
   SessionView,
 } from "./types";
@@ -102,6 +103,35 @@ export async function listRuns(mandateId: string): Promise<AgentRun[]> {
   const res = await authFetch(`${GATEWAY_URL}/mandates/${encodeURIComponent(mandateId)}/runs`);
   const data = await asJson(res, "listRuns");
   return Array.isArray(data) ? (data as AgentRun[]) : [];
+}
+
+// ---- campaign orchestrator (in-app nudges) -------------------------------
+
+/** The at-most-one campaign nudge for this session's mandate, or null. Purely
+ * a suggestion — accepting runs its `suggested_goal` through the ordinary /run
+ * pipeline. */
+export async function getCampaignOffer(sessionId: string): Promise<CampaignOffer | null> {
+  const res = await authFetch(`${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/campaign`);
+  const data = await asJson(res, "getCampaignOffer");
+  return (data?.offer as CampaignOffer | null) ?? null;
+}
+
+/** Log the human's accept/dismiss on a shown offer (a UI-only record; the
+ * actual purchase, on accept, is driven separately through /run). */
+export async function resolveCampaignOffer(
+  sessionId: string,
+  offerId: string,
+  status: "accepted" | "dismissed",
+): Promise<void> {
+  const res = await authFetch(
+    `${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/campaign/${encodeURIComponent(offerId)}/resolve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    },
+  );
+  await asJson(res, "resolveCampaignOffer");
 }
 
 /** Permanently delete one run from the durable history. */

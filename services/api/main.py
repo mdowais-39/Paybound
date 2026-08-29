@@ -20,6 +20,7 @@ import logging
 import os
 import threading
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +33,8 @@ from ..agent.mcp_client import HttpMcpClient
 from ..agent.ml_loader import load_confidence, load_relevance, load_upsell
 from ..agent.orchestrator import Orchestrator
 from ..agent.tracing import flush, init_tracing
+from ..campaign.db import CampaignStore
+from ..campaign.engine import CampaignEngine
 from ..explain.narrator import Narrator
 
 logger = logging.getLogger("paybound.api")
@@ -68,6 +71,8 @@ def _startup() -> None:
     # connection per call, so one shared instance is just avoiding repeated
     # GeminiLLM construction.
     _state["narrator"] = Narrator()
+    # Campaign-offer store — its own psycopg connection per call, same pattern.
+    _state["campaign"] = CampaignStore()
 
 
 @app.on_event("shutdown")
@@ -105,6 +110,11 @@ class SelectRequest(BaseModel):
     item_id: str
     run_id: str | None = None
     goal: str | None = None
+
+
+class CampaignResolveRequest(BaseModel):
+    # The human's decision on a shown campaign offer.
+    status: str  # "accepted" | "dismissed"
 
 
 class UpsellRequest(BaseModel):
@@ -264,6 +274,69 @@ def _sse_response(session_id: str, span_name: str, work, record=None):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "paybound-agent-api"}
+
+
+@app.get("/sessions/{session_id}/campaign")
+def get_campaign_offer(session_id: str, authorization: str | None = Header(None)) -> dict:
+    """The campaign orchestrator's at-most-one in-app nudge for this mandate,
+    or `{"offer": null}`. A nudge only ever proposes a natural-language goal +
+    reason — accepting it runs that goal through the ordinary, fully
+    kernel-gated /run pipeline (see POST /sessions/{id}/campaign/{id}/resolve
+    + the shop console). Evaluated fresh each call (cheap, no scheduler), with
+    a once-per-24h frequency cap: an un-resolved offer keeps showing across
+    reloads; after one is accepted/dismissed, no new nudge appears for 24h."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
+    store: CampaignStore = _state["campaign"]
+    try:
+        mandate = _state["db"].get_mandate_for_session(session_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    mandate_id = mandate["mandate_id"]
+
+    # Cooldown / persistence: a still-'shown' offer keeps showing; any resolved
+    # offer inside the 24h window suppresses a fresh one.
+    recent = store.recent_offer(mandate_id)
+    if recent is not None:
+        return {"offer": recent if recent["status"] == "shown" else None}
+
+    # Evaluate fresh. Reuse the orchestrator's already-wired cart_composer
+    # (upsell + shared MiniLM embedder) — no LLM call happens in evaluate.
+    try:
+        orch = _orchestrator()
+        engine = CampaignEngine(orch.cart_composer, _state["mcp"])
+        running_spend = store.running_spend(session_id)
+        runs = store.list_runs(mandate_id)
+        offer = engine.evaluate(mandate, running_spend, runs, datetime.now(UTC))
+    except Exception:  # noqa: BLE001 — a nudge is best-effort; never break the console
+        logger.warning("campaign evaluate failed for session %s (non-fatal)", session_id, exc_info=True)
+        return {"offer": None}
+
+    if offer is None:
+        return {"offer": None}
+    try:
+        return {"offer": store.insert_offer(mandate_id, offer)}
+    except Exception:  # noqa: BLE001
+        logger.warning("campaign insert failed for session %s (non-fatal)", session_id, exc_info=True)
+        return {"offer": None}
+
+
+@app.post("/sessions/{session_id}/campaign/{offer_id}/resolve")
+def resolve_campaign_offer(
+    session_id: str,
+    offer_id: str,
+    req: CampaignResolveRequest,
+    authorization: str | None = Header(None),
+) -> dict:
+    """Record the human's accept/dismiss on a shown campaign offer. Accepting
+    is a UI convenience only — the actual purchase is driven separately through
+    /run — so this just logs the outcome."""
+    owner_hash = _authenticate(authorization)
+    _require_session_owner(session_id, owner_hash)
+    if req.status not in ("accepted", "dismissed"):
+        raise HTTPException(status_code=400, detail="status must be 'accepted' or 'dismissed'")
+    resolved = _state["campaign"].resolve_offer(offer_id, req.status)
+    return {"resolved": resolved}
 
 
 @app.post("/sessions/{session_id}/run/stream")

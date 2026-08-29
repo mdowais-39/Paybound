@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useMandate } from "../context/MandateContext";
 import { CartList, CartSession } from "../components/shop/CartList";
 import { CartDetailView } from "../components/shop/CartDetailView";
+import { CampaignBanner } from "../components/shop/CampaignBanner";
 import { GoalInput } from "../components/shop/GoalInput";
 import { Pill } from "../components/shared/Pill";
 import { SpendMeter } from "../components/layout/SpendMeter";
@@ -13,8 +14,10 @@ import {
   resolveUpsellStream,
   listRuns,
   deleteRun,
+  getCampaignOffer,
+  resolveCampaignOffer,
 } from "../lib/api";
-import { PipelineStageState, OrchestratorResult, SessionOutcome } from "../lib/types";
+import { PipelineStageState, OrchestratorResult, SessionOutcome, CampaignOffer } from "../lib/types";
 import {
   loadCarts,
   saveCarts,
@@ -182,9 +185,27 @@ export const ShopPage: React.FC = () => {
   const [hydratedMandate, setHydratedMandate] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [campaignOffer, setCampaignOffer] = useState<CampaignOffer | null>(null);
 
   const selectedCart = carts.find((c) => c.id === selectedCartId) || null;
   const sessionId = activeMandate?.session_id || null;
+
+  // The campaign orchestrator's at-most-one in-app nudge for this mandate,
+  // fetched once when a mandate becomes active (no polling). Best-effort — a
+  // failed fetch just means no banner, never a broken console.
+  useEffect(() => {
+    if (!sessionId) {
+      setCampaignOffer(null);
+      return;
+    }
+    let cancelled = false;
+    getCampaignOffer(sessionId)
+      .then((o) => !cancelled && setCampaignOffer(o))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   // Rehydrate this mandate's run history whenever the bound mandate changes
   // (including the first async load and every tab remount). Two steps:
@@ -411,6 +432,24 @@ export const ShopPage: React.FC = () => {
     }
   };
 
+  // Accepting a campaign nudge is a UI convenience: log the outcome, then run
+  // its suggested goal through the SAME kernel-gated pipeline as any other
+  // purchase (handleSendGoal). Dismissing just logs it and hides the banner.
+  const handleAcceptCampaign = () => {
+    if (!sessionId || !campaignOffer) return;
+    const offer = campaignOffer;
+    setCampaignOffer(null);
+    resolveCampaignOffer(sessionId, offer.offer_id, "accepted").catch(() => {});
+    handleSendGoal(offer.suggested_goal);
+  };
+
+  const handleDismissCampaign = () => {
+    if (!sessionId || !campaignOffer) return;
+    const offer = campaignOffer;
+    setCampaignOffer(null);
+    resolveCampaignOffer(sessionId, offer.offer_id, "dismissed").catch(() => {});
+  };
+
   return (
     <div id="page-shop" className="flex flex-col min-h-[calc(100vh-12rem)] pb-32">
       {/* Active Mandate Context Strip */}
@@ -460,6 +499,17 @@ export const ShopPage: React.FC = () => {
           <Link to="/mandate" className="underline font-semibold">Mandate Console</Link>{" "}
           to grant the agent bounded shopping authority.
         </div>
+      )}
+
+      {/* Campaign orchestrator nudge — proactive, from real purchase history.
+          Only when a live mandate can act and a run isn't already in flight. */}
+      {campaignOffer && activeMandate && !activeMandate.revoked && (
+        <CampaignBanner
+          offer={campaignOffer}
+          onAccept={handleAcceptCampaign}
+          onDismiss={handleDismissCampaign}
+          disabled={loading}
+        />
       )}
 
       {/* Master-Detail Layout */}

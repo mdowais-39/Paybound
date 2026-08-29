@@ -97,6 +97,18 @@ export interface OrchestratorResult {
   upsell_suggestion?: UpsellSuggestion | null;
 }
 
+/** An in-app campaign nudge (GET /sessions/{id}/campaign). The engine only ever
+ * proposes a natural-language goal + reason from real purchase history —
+ * accepting runs `suggested_goal` through the ordinary kernel-gated /run
+ * pipeline. Never carries a price or a cart; it's a suggestion, not a charge. */
+export interface CampaignOffer {
+  offer_id: string;
+  campaign_type: "complete_the_set" | "win_back";
+  reason: string;
+  suggested_goal: string;
+  status: "shown" | "accepted" | "dismissed";
+}
+
 /** One durable run from the console history (GET /mandates/{id}/runs). `result`
  * is the full OrchestratorResult snapshot the backend produced, so the console
  * rebuilds each card faithfully from the DB — not from per-browser storage. */
