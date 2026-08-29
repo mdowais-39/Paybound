@@ -7,6 +7,9 @@ interface GoalInputProps {
   disabled?: boolean;
   onScenarioSelect?: (scenarioKey: string) => void;
   id?: string;
+  /** True when the open cart is mid-conversation (CLARIFY/CHOOSE) — the next
+   * message refines that same exchange rather than starting a new purchase. */
+  continuing?: boolean;
 }
 
 const TEST_SCENARIOS = [
@@ -53,6 +56,7 @@ export const GoalInput: React.FC<GoalInputProps> = ({
   loading = false,
   disabled = false,
   id,
+  continuing = false,
 }) => {
   const [goalText, setGoalText] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -179,7 +183,9 @@ export const GoalInput: React.FC<GoalInputProps> = ({
             placeholder={
               disabled
                 ? "Select an active mandate above to begin shopping..."
-                : "Tell the agent what to buy (e.g., 'buy running shoes under 3000')..."
+                : continuing
+                  ? "Refine this — e.g. 'actually, under 2000' or 'something else'..."
+                  : "Tell the agent what to buy (e.g., 'buy running shoes under 3000')..."
             }
             className="w-full bg-transparent text-sm sm:text-[15px] font-semibold text-[#0F172A] placeholder:text-[#64748B] placeholder:font-normal focus:outline-none py-2 px-1 disabled:opacity-50"
           />

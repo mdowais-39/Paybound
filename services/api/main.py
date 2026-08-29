@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
 
 from ..agent.db import PgDb
@@ -61,23 +62,30 @@ def _startup() -> None:
         "models loaded -> relevance:%s upsell:%s confidence:%s",
         relevance is not None, upsell is not None, confidence is not None,
     )
+    dsn = os.environ.get("DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
+    # One shared pool for every DB-backed class below (PgDb/Narrator/
+    # CampaignStore each used to open a fresh connection per call — a real
+    # per-request handshake cost, same class as the ML models built once here
+    # rather than per-request). Small pool: this is a single-instance demo
+    # API, not a fleet behind a load balancer.
+    pool = ConnectionPool(dsn, min_size=1, max_size=10, open=True)
+    _state["pool"] = pool
     _state["mcp"] = HttpMcpClient(base_url)
-    _state["db"] = PgDb()
+    _state["db"] = PgDb(pool=pool)
     _state["relevance"] = relevance
     _state["upsell"] = upsell
     _state["confidence"] = confidence
     _state["tracer"] = init_tracing()
-    # Built once, like the ML models above — narrate_session opens its own DB
-    # connection per call, so one shared instance is just avoiding repeated
-    # GeminiLLM construction.
-    _state["narrator"] = Narrator()
-    # Campaign-offer store — its own psycopg connection per call, same pattern.
-    _state["campaign"] = CampaignStore()
+    _state["narrator"] = Narrator(pool=pool)
+    _state["campaign"] = CampaignStore(pool=pool)
 
 
 @app.on_event("shutdown")
 def _shutdown() -> None:
     flush()
+    pool = _state.get("pool")
+    if pool is not None:
+        pool.close()
 
 
 def _orchestrator() -> Orchestrator:

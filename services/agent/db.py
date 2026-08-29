@@ -13,6 +13,7 @@ import os
 from typing import Protocol
 
 import psycopg
+from psycopg_pool import ConnectionPool
 
 
 class Db(Protocol):
@@ -24,13 +25,22 @@ class Db(Protocol):
 
 
 class PgDb:
-    def __init__(self, dsn: str | None = None):
+    def __init__(self, dsn: str | None = None, pool: ConnectionPool | None = None):
         self.dsn = (dsn or os.environ.get("DATABASE_URL", "")).replace(
             "postgres://", "postgresql://", 1
         )
+        #: Optional shared pool (built once at API startup, same precedent as
+        #: the ML models) — every method below borrows a connection from it
+        #: instead of paying a fresh TCP+TLS+auth handshake per call. Falls
+        #: back to a direct per-call connect when no pool is given, so scripts
+        #: and one-off tools can still construct a `PgDb()` on their own.
+        self.pool = pool
+
+    def _conn(self):
+        return self.pool.connection() if self.pool is not None else psycopg.connect(self.dsn)
 
     def get_mandate_for_session(self, session_id: str) -> dict:
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT m.mandate_id, m.budget_total_paise, m.per_txn_cap_paise,
                           m.allowed_categories, m.allowed_merchants,
@@ -53,7 +63,7 @@ class PgDb:
         }
 
     def get_session_state(self, session_id: str) -> str:
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT state FROM purchase_session WHERE session_id = %s", (session_id,)
             )
@@ -63,7 +73,7 @@ class PgDb:
         return row[0]
 
     def identity_exists(self, token_hash: str) -> bool:
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT 1 FROM identity WHERE token_hash = %s", (token_hash,))
             return cur.fetchone() is not None
 
@@ -71,7 +81,7 @@ class PgDb:
         """A session's mandate's owner token hash, or None if the session
         doesn't exist (mirrors the gateway's ownership model exactly: a
         session with no owner — pre-auth data — is open to any identity)."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT m.owner_token_hash FROM purchase_session s
                    JOIN intent_mandate m USING (mandate_id) WHERE s.session_id = %s""",
@@ -93,7 +103,7 @@ class PgDb:
         if total_paise is None:
             cart = result.get("cart") or {}
             total_paise = cart.get("total_paise") or 0
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO agent_run (
                        run_id, session_id, mandate_id, goal, state, verdict,

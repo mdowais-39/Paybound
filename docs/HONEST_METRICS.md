@@ -27,6 +27,23 @@ simulated — stated plainly, in code comments, and here.
 | **UPI AutoPay recurring / S2S UPI** | Not enabled on the test account (S2S UPI 404s). | We use Payment Links instead (real, dashboard-visible). |
 | **Webhook receipt in automated scripts** | The real `payment_link.paid` webhook needs a public tunnel to reach localhost. | Scripts drive the receiver with a **correctly-HMAC-signed** synthetic event (identical to Razorpay's). In the live venue the real webhook fires. |
 
+## Conversational checkout — what "conversational" means here
+
+The buyer side takes a natural-language goal, asks a real follow-up question
+when it's ambiguous (never guesses), and — as of 2026-08-29 — lets the human
+refine an open exchange in place: typing "actually, under 2000" while a
+CLARIFY or CHOOSE card is still open continues that same conversation (same
+`run_id`, same card, prior wording carried forward so the parser sees full
+context) instead of starting an unrelated new purchase. What it is **not** is
+an open-ended chat thread that can mutate an already-composed cart mid-turn
+("swap the blue one for red") — once a cart is composed and paused at UPSELL,
+the accept/decline is a deliberate typed control, not free text, because a
+cart that's about to be gated for money is exactly the point past which this
+build chooses structure over open dialogue. That's a scoping choice, not an
+oversight: a freeform chat that can mutate an already-mandate-gated cart is a
+real open design problem (how do you keep "conversational" from becoming a
+side-channel around the kernel's own bounds?), not a small feature gap.
+
 ## Known limitation
 
 - **Single distributed trace grouping.** All services export OTLP traces and the

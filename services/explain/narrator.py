@@ -27,6 +27,9 @@ import logging
 import os
 import sys
 
+import psycopg
+from psycopg_pool import ConnectionPool
+
 from services.agent.llm import GeminiLLM
 
 logger = logging.getLogger("paybound.narrator")
@@ -46,11 +49,18 @@ def build_prompt(event_type: str, payload: dict) -> str:
 
 
 class Narrator:
-    def __init__(self, llm=None, dsn: str | None = None):
+    def __init__(self, llm=None, dsn: str | None = None, pool: ConnectionPool | None = None):
         self.llm = llm or GeminiLLM()
         self.dsn = (dsn or os.environ.get("DATABASE_URL", "")).replace(
             "postgres://", "postgresql://", 1
         )
+        #: Optional shared pool — see PgDb._conn. Narration fires after every
+        #: purchase step (see main.py `_narrate_async`), so avoiding a fresh
+        #: handshake per call matters here too, not just on the hot read path.
+        self.pool = pool
+
+    def _conn(self):
+        return self.pool.connection() if self.pool is not None else psycopg.connect(self.dsn)
 
     def narrate_entry(self, event_type: str, payload: dict) -> str:
         """Produce a faithful one-sentence narrative for a single decision.
@@ -68,10 +78,8 @@ class Narrator:
     def narrate_session(self, session_id: str) -> int:
         """Narrate every not-yet-narrated entry on a session. Returns the count.
         Commits after each entry so a later failure never loses earlier progress."""
-        import psycopg
-
         narrated = 0
-        with psycopg.connect(self.dsn) as conn:
+        with self._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT entry_id, event_type, payload FROM audit_entry "
@@ -94,9 +102,7 @@ class Narrator:
         """Narrate every not-yet-narrated entry across ALL sessions — a one-time
         backfill for entries recorded before narration was wired into the live
         pipeline (or a recovery sweep after an outage). Returns the total count."""
-        import psycopg
-
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT DISTINCT session_id FROM audit_entry WHERE narrative IS NULL")
             session_ids = [str(r[0]) for r in cur.fetchall()]
         return sum(self.narrate_session(sid) for sid in session_ids)

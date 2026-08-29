@@ -305,11 +305,25 @@ export const ShopPage: React.FC = () => {
     if (!activeMandate || !sessionId) return;
     setLoading(true);
 
-    const internalId = `run_${crypto.randomUUID()}`;
+    // If the open cart is mid-conversation (CLARIFY just asked a question, or
+    // CHOOSE is waiting on a preference), a new goal typed now is a REFINEMENT
+    // of that same exchange — "actually, under 2000" — not an unrelated new
+    // purchase. Continue the same card/run_id (record_run upserts on run_id,
+    // so this updates the same DB row) instead of spawning a sibling cart, and
+    // carry the prior wording forward: the backend re-parses the goal fresh on
+    // every call with no memory of its own, so only the client can preserve
+    // context across turns. UPSELL is excluded — it already has dedicated
+    // accept/decline controls, so a typed goal there starts a new purchase.
+    const continuing =
+      selectedCart != null &&
+      (selectedCart.result?.state === "CLARIFY" || selectedCart.result?.state === "CHOOSE");
+    const internalId = continuing ? selectedCart!.id : `run_${crypto.randomUUID()}`;
+    const combinedGoal = continuing ? `${selectedCart!.goal}. ${goal}` : goal;
+
     const pending: CartSession = {
       id: internalId,
       cartId: "",
-      goal,
+      goal: combinedGoal,
       title: "Running agent…",
       timestamp: new Date().toISOString(),
       stages: PENDING_STAGES,
@@ -318,17 +332,19 @@ export const ShopPage: React.FC = () => {
       result: null,
       amountPaise: 0,
     };
-    setCarts((prev) => [pending, ...prev]);
+    setCarts((prev) =>
+      continuing ? prev.map((c) => (c.id === internalId ? pending : c)) : [pending, ...prev],
+    );
     setSelectedCartId(internalId);
 
     try {
       const result = await runAgentStream(
         sessionId,
-        goal,
+        combinedGoal,
         (evt) => applyStageEvent(internalId, evt.id, evt.status),
         internalId,
       );
-      applyResult(internalId, goal, result);
+      applyResult(internalId, combinedGoal, result);
       await refreshMandates();
     } catch (err: any) {
       patchCart(internalId, {
@@ -544,6 +560,9 @@ export const ShopPage: React.FC = () => {
           onSendGoal={handleSendGoal}
           loading={loading}
           disabled={!activeMandate || !!activeMandate.revoked}
+          continuing={
+            selectedCart?.result?.state === "CLARIFY" || selectedCart?.result?.state === "CHOOSE"
+          }
         />
       </div>
     </div>

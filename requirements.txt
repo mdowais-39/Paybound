@@ -16,6 +16,9 @@ onnx>=1.17
 onnxruntime>=1.19
 skl2onnx>=1.17
 
+# Database
+psycopg[pool]>=3.2
+
 # Service transport
 grpcio>=1.68
 grpcio-tools>=1.68

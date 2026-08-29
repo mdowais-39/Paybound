@@ -1,7 +1,9 @@
 """Database access for the campaign orchestrator — the two writes plus the
-history reads the engine needs. A small dedicated class (its own psycopg
-connection via DATABASE_URL), following the precedent of `services/explain/
-narrator.py`, rather than growing `agent/db.py::PgDb` into a god-object.
+history reads the engine needs. A small dedicated class, following the
+precedent of `services/explain/narrator.py`, rather than growing
+`agent/db.py::PgDb` into a god-object. Shares the API's connection pool when
+one is given (see `_conn`), falling back to a direct per-call connection via
+DATABASE_URL for standalone use (scripts, one-off tools).
 
 Nothing here is money-critical: campaign_offer is an append-only read model
 (what nudge was shown, and whether the human accepted or dismissed it), so it's
@@ -13,21 +15,30 @@ from __future__ import annotations
 import os
 
 import psycopg
+from psycopg_pool import ConnectionPool
 
 from .engine import CampaignOffer
 
 
 class CampaignStore:
-    def __init__(self, dsn: str | None = None):
+    def __init__(self, dsn: str | None = None, pool: ConnectionPool | None = None):
         self.dsn = (dsn or os.environ.get("DATABASE_URL", "")).replace(
             "postgres://", "postgresql://", 1
         )
+        #: Optional shared pool — see PgDb._conn for why. A single `/campaign`
+        #: request calls up to 4 of these methods in a row (running_spend,
+        #: list_runs, dismissed_item_ids, dismissed_categories), so a shared
+        #: pool avoids paying 4 fresh handshakes per request.
+        self.pool = pool
+
+    def _conn(self):
+        return self.pool.connection() if self.pool is not None else psycopg.connect(self.dsn)
 
     def running_spend(self, session_id: str) -> int:
         """The session's committed spend — subtracted from the mandate budget
         to get remaining headroom for a nudge (an authorization hold, exactly
         as the kernel's own cumulative-budget check reads it)."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT running_spend_paise FROM purchase_session WHERE session_id = %s",
                 (session_id,),
@@ -39,7 +50,7 @@ class CampaignStore:
         """The mandate's agent_run history, newest-first — the real purchase
         record the engine reasons over. `result_json` comes back as a dict
         (JSONB auto-adapts)."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT state, result_json, created_at FROM agent_run
                    WHERE mandate_id = %s ORDER BY created_at DESC""",
@@ -54,7 +65,7 @@ class CampaignStore:
         reappearing on a later evaluation (the 24h cooldown alone only blocks
         a NEW nudge of any kind; it doesn't remember which specific item was
         turned down)."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT DISTINCT item_id FROM campaign_offer
                    WHERE mandate_id = %s AND status = 'dismissed' AND item_id IS NOT NULL""",
@@ -66,7 +77,7 @@ class CampaignStore:
         """Every category a win-back nudge for this mandate was already
         dismissed for — same purpose as `dismissed_item_ids`, but for win-back,
         which proposes a CATEGORY rather than a specific item."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT DISTINCT category FROM campaign_offer
                    WHERE mandate_id = %s AND status = 'dismissed'
@@ -80,7 +91,7 @@ class CampaignStore:
         or None. Used to (a) keep re-showing an un-resolved offer across page
         loads, and (b) enforce the once-per-24h frequency cap after one is
         accepted/dismissed."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT offer_id, campaign_type, reason, suggested_goal, status
                    FROM campaign_offer
@@ -94,7 +105,7 @@ class CampaignStore:
     def insert_offer(self, mandate_id: str, offer: CampaignOffer) -> dict:
         """Persist a freshly-evaluated offer (status 'shown') and return it in
         the API shape."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO campaign_offer
                        (mandate_id, campaign_type, reason, suggested_goal, item_id, category)
@@ -117,7 +128,7 @@ class CampaignStore:
         """Mark an offer accepted/dismissed. Only affects a still-'shown' row
         (idempotent — a double-resolve is a no-op). Returns whether a row
         changed."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """UPDATE campaign_offer SET status = %s, resolved_at = now()
                    WHERE offer_id = %s AND status = 'shown'""",
