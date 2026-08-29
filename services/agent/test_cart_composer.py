@@ -96,6 +96,38 @@ def test_find_upsell_includes_a_complement_explicitly_allowed():
     assert addon is not None
 
 
+def test_find_upsell_prefers_the_higher_value_complement_among_valid_matches():
+    """Among several equally real, in-stock, in-budget, in-scope complements
+    in the SAME (best-ranked) category, the higher-priced one wins — a real
+    revenue-directed choice, not just whichever search happened to list first."""
+    cheap = {"item_id": "belt-cheap", "title": "Basic Belt", "category": "sporting goods",
+             "price_paise": 20000, "merchant_id": "m1"}
+    pricey = {"item_id": "belt-pricey", "title": "Premium Belt", "category": "sporting goods",
+              "price_paise": 60000, "merchant_id": "m1"}
+    mcp = FakeMcp({"sporting goods": [cheap, pricey]})  # cheap listed FIRST
+    upsell = UpsellModel(category_complements={"shoes": ["sporting goods"]})
+    composer = CartComposer(mcp, upsell=upsell)
+
+    addon = composer.find_upsell(SHOE, [], Intent(query="running shoes"))
+    assert addon["item_id"] == "belt-pricey", "the pricier valid match must win, not list order"
+
+
+def test_find_upsell_still_respects_the_price_cap_when_ranking_by_value():
+    """Value-ranking must never override the mandate's own price ceiling --
+    the higher-priced item is only preferred among options that already
+    passed every other check."""
+    cheap = {"item_id": "belt-cheap", "title": "Basic Belt", "category": "sporting goods",
+             "price_paise": 20000, "merchant_id": "m1"}
+    too_pricey = {"item_id": "belt-too-pricey", "title": "Luxury Belt", "category": "sporting goods",
+                  "price_paise": 90000, "merchant_id": "m1"}
+    mcp = FakeMcp({"sporting goods": [cheap, too_pricey]})
+    upsell = UpsellModel(category_complements={"shoes": ["sporting goods"]})
+    composer = CartComposer(mcp, upsell=upsell)
+
+    addon = composer.find_upsell(SHOE, [], Intent(query="running shoes", max_price_paise=50000))
+    assert addon["item_id"] == "belt-cheap", "the over-cap item must be excluded, however valuable"
+
+
 # --- compose: never adds a complement unless the human already accepted ----
 
 def test_compose_never_auto_adds_even_when_a_complement_is_available():

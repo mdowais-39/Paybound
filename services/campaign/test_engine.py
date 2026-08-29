@@ -120,6 +120,35 @@ def test_win_back_silent_before_the_threshold():
     assert engine.evaluate(mandate(), 0, runs, NOW) is None
 
 
+def test_win_back_does_not_re_propose_a_dismissed_category():
+    """Same guard as complete_the_set's dismissed-item exclusion, but for
+    win-back's category. Only one category in history, so once it's excluded
+    there's no second-choice candidate left — the offer is None, not a retry
+    of the same category."""
+    engine = _engine({})
+    runs = [run("COMPLETED", SHOE, NOW - timedelta(days=20))]
+    assert (
+        engine.evaluate(mandate(), 0, runs, NOW, dismissed_categories={SHOE["category"]})
+        is None
+    )
+    # Without the exclusion, the same setup DOES fire — proves the guard is real.
+    assert engine.evaluate(mandate(), 0, runs, NOW) is not None
+
+
+def test_win_back_falls_back_to_the_next_ranked_category_when_top_is_dismissed():
+    """When multiple categories exist, dismissing the top-ranked one still
+    lets a real second-choice category through, instead of giving up entirely."""
+    engine = _engine({})
+    runs = [
+        run("COMPLETED", SHOE, NOW - timedelta(days=20)),
+        run("COMPLETED", SHOE, NOW - timedelta(days=25)),
+        run("COMPLETED", SPORT, NOW - timedelta(days=30)),
+    ]
+    offer = engine.evaluate(mandate(), 0, runs, NOW, dismissed_categories={"shoes"})
+    assert offer is not None
+    assert offer.category == "sporting goods"
+
+
 # --- Bound re-checks -------------------------------------------------------
 
 def test_no_offer_when_budget_is_exhausted():

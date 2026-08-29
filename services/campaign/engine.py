@@ -56,6 +56,7 @@ class CampaignEngine:
         runs: list[dict],
         now: datetime,
         dismissed_item_ids: set[str] | None = None,
+        dismissed_categories: set[str] | None = None,
     ) -> CampaignOffer | None:
         """Return at most one offer. `runs` is the mandate's agent_run history,
         NEWEST-FIRST (as `agent_run` is indexed). Re-checks the mandate's
@@ -63,7 +64,9 @@ class CampaignEngine:
         longer spend, even if it could when the original purchase happened.
         `dismissed_item_ids` excludes items already explicitly turned down —
         the 24h cooldown alone only blocks a NEW nudge of any kind; it doesn't
-        remember which specific item was declined."""
+        remember which specific item was declined. `dismissed_categories` is
+        the same idea for win-back, which proposes a category rather than a
+        specific item."""
         # Bound re-check: expired or fully-spent mandates get no nudge. (A
         # revoked mandate never reaches here — the route wouldn't resolve it —
         # but TTL and remaining budget are re-verified regardless.)
@@ -80,7 +83,7 @@ class CampaignEngine:
 
         return self._complete_the_set(
             mandate, remaining, completed, dismissed_item_ids or set()
-        ) or self._win_back(completed, now)
+        ) or self._win_back(completed, now, dismissed_categories or set())
 
     # --- Rule A: complete the set (cross-sell) -----------------------------
 
@@ -139,7 +142,9 @@ class CampaignEngine:
 
     # --- Rule B: win-back --------------------------------------------------
 
-    def _win_back(self, completed: list[dict], now: datetime) -> CampaignOffer | None:
+    def _win_back(
+        self, completed: list[dict], now: datetime, dismissed_categories: set[str]
+    ) -> CampaignOffer | None:
         last = completed[0]
         created = last.get("created_at")
         if created is None or (now - created) < timedelta(days=WIN_BACK_DAYS):
@@ -147,7 +152,13 @@ class CampaignEngine:
         cats = [c for r in completed for c in self._categories(r)]
         if not cats:
             return None
-        top = Counter(cats).most_common(1)[0][0]
+        # Walk ranked categories (most-purchased first) past any the customer
+        # already dismissed a win-back nudge for, instead of just giving up —
+        # a real second-choice category is still a better nudge than none.
+        ranked = [c for c, _ in Counter(cats).most_common()]
+        top = next((c for c in ranked if c not in dismissed_categories), None)
+        if top is None:
+            return None
         return CampaignOffer(
             campaign_type="win_back",
             reason=(

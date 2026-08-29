@@ -62,6 +62,19 @@ class CampaignStore:
             )
             return {str(r[0]) for r in cur.fetchall()}
 
+    def dismissed_categories(self, mandate_id: str) -> set[str]:
+        """Every category a win-back nudge for this mandate was already
+        dismissed for — same purpose as `dismissed_item_ids`, but for win-back,
+        which proposes a CATEGORY rather than a specific item."""
+        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT DISTINCT category FROM campaign_offer
+                   WHERE mandate_id = %s AND status = 'dismissed'
+                     AND campaign_type = 'win_back' AND category IS NOT NULL""",
+                (mandate_id,),
+            )
+            return {r[0] for r in cur.fetchall()}
+
     def recent_offer(self, mandate_id: str, within_hours: int = 24) -> dict | None:
         """The most recent offer for this mandate inside the cooldown window,
         or None. Used to (a) keep re-showing an un-resolved offer across page
@@ -84,8 +97,8 @@ class CampaignStore:
         with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO campaign_offer
-                       (mandate_id, campaign_type, reason, suggested_goal, item_id)
-                   VALUES (%s, %s, %s, %s, %s::uuid)
+                       (mandate_id, campaign_type, reason, suggested_goal, item_id, category)
+                   VALUES (%s, %s, %s, %s, %s::uuid, %s)
                    RETURNING offer_id, campaign_type, reason, suggested_goal, status""",
                 (
                     mandate_id,
@@ -93,6 +106,7 @@ class CampaignStore:
                     offer.reason,
                     offer.suggested_goal,
                     offer.item_id,
+                    offer.category,
                 ),
             )
             row = cur.fetchone()

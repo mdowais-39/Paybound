@@ -98,7 +98,16 @@ class CartComposer(BaseAgent):
         category literally named 'socks', instead of requiring an exact string
         match. The mandate is still enforced on the RETURNED item's real
         category, and a complement must be a DIFFERENT category than the chosen
-        item (a complement, not more of the same)."""
+        item (a complement, not more of the same).
+
+        Among several equally-valid matches in the FIRST complement category
+        that has any (the trained table's own category preference order is
+        kept — a real "socks" match still beats a lower-ranked "shoe care"
+        match), the highest-priced one is returned. This is a genuine
+        cross-sell/upsell distinction, not just convenience-matching: "grow the
+        merchant's revenue" means preferring the complement that adds more to
+        the cart, among options that are all equally real, in-stock,
+        in-budget, and in-mandate-scope."""
         if self.upsell is None:
             return None
         # An empty/absent allow-list means the mandate is UNRESTRICTED (same
@@ -115,21 +124,21 @@ class CartComposer(BaseAgent):
                 except Exception:  # noqa: BLE001
                     pass  # fall back to keyword search
             hits = self.call_tool("search_catalog", args)
-            for it in hits.get("items", []):
-                if it["item_id"] == chosen.item_id:
-                    continue
+            valid = [
+                it
+                for it in hits.get("items", [])
+                if it["item_id"] != chosen.item_id
                 # A complement is a DIFFERENT category, not more of the same item.
-                if it["category"] == chosen.category:
-                    continue
-                # Enforce the mandate on the ITEM's real category (semantic search
-                # may return a category other than the complement concept).
-                if allowed is not None and it["category"] not in allowed:
-                    continue
+                and it["category"] != chosen.category
+                # Enforce the mandate on the ITEM's real category (semantic
+                # search may return a category other than the complement concept).
+                and (allowed is None or it["category"] in allowed)
                 # Single-merchant carts, and within any stated price limit.
-                if chosen.merchant_id and it.get("merchant_id") != chosen.merchant_id:
-                    continue
-                if cap is None or it["price_paise"] <= cap:
-                    return it
+                and (not chosen.merchant_id or it.get("merchant_id") == chosen.merchant_id)
+                and (cap is None or it["price_paise"] <= cap)
+            ]
+            if valid:
+                return max(valid, key=lambda it: it["price_paise"])
         return None
 
     def _confidence(self, chosen, intent, cart, clarification_turns, upsold) -> float:
