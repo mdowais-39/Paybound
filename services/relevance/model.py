@@ -78,13 +78,19 @@ class RelevanceRanker:
         return self.booster.predict(self.features(queries, titles))
 
     def rank(self, query: str, candidates: list[dict], title_key: str = "title") -> list[dict]:
-        """Return candidates sorted by predicted relevance (highest first)."""
+        """Return candidates sorted by predicted relevance (highest first).
+        Each returned dict also carries its raw `_relevance_score` — the
+        model's ABSOLUTE scale isn't well-calibrated against 0 (a wildly
+        off-topic title can still score surprisingly high), so a caller that
+        wants to drop genuinely irrelevant results should compare scores
+        RELATIVE to the top one (see `DiscoveryWorker._rank`'s margin filter),
+        not against a fixed cutoff."""
         if not candidates or self.booster is None:
             return candidates
         titles = [c.get(title_key, "") for c in candidates]
         scores = self.score([query] * len(titles), titles)
         order = np.argsort(-scores)
-        return [candidates[i] for i in order]
+        return [{**candidates[i], "_relevance_score": float(scores[i])} for i in order]
 
     def save(self, path: Path = ARTIFACT) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

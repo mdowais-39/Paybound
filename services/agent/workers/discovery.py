@@ -7,6 +7,16 @@ from __future__ import annotations
 from ..base_agent import BaseAgent
 from ..models import Candidate, Intent, SearchOutcome
 
+#: How far below the TOP-ranked candidate's relevance score another candidate
+#: may fall and still be shown. Relative, not absolute, on purpose: the
+#: trained model's absolute scale isn't well-calibrated against zero — a
+#: genuinely off-topic title (a phone case, for a "keyboard" search) can
+#: still score close to the top of its 0-3 ESCI range, just measurably below
+#: the real matches. 0.15 was picked by measuring the actual gap on the
+#: reported case: real keyboards/accessories clustered within ~0.1 of the
+#: top score, the mismatched phone case and table sat ~0.18-0.24 below it.
+RELEVANCE_MARGIN = 0.15
+
 
 class DiscoveryWorker(BaseAgent):
     def __init__(self, mcp, request_budget: int = 12, relevance=None):
@@ -78,10 +88,24 @@ class DiscoveryWorker(BaseAgent):
 
     def _rank(self, affordable: list[Candidate], intent: Intent) -> list[Candidate]:
         """Rank the already-affordable, in-scope candidates by the ESCI-trained
-        relevance model when available (heuristic fallback otherwise)."""
+        relevance model when available (heuristic fallback otherwise), then
+        drop any candidate whose relevance falls more than RELEVANCE_MARGIN
+        below the top-ranked one.
+
+        The base catalog search's job is RECALL, not precision (see the
+        storefront's `search_catalog` doc comment) — a hybrid semantic +
+        keyword query for a short term like "keyboard" can legitimately pull
+        in a handful of only-vaguely-related items just to fill its result
+        quota. Sorting alone doesn't stop those from landing in the human's
+        CHOOSE list if the genuinely relevant pool is smaller than
+        MAX_OPTIONS; this margin is what actually removes them, rather than
+        just placing them last."""
         if self.relevance is not None:
             rows = [{"title": c.title, "_c": c} for c in affordable]
             ranked = self.relevance.rank(intent.query, rows, title_key="title")
+            if ranked and "_relevance_score" in ranked[0]:
+                top_score = ranked[0]["_relevance_score"]
+                ranked = [r for r in ranked if top_score - r["_relevance_score"] <= RELEVANCE_MARGIN]
             return [r["_c"] for r in ranked]
         # heuristic fallback: best affordable (highest price at/under the cap)
         for c in affordable:
