@@ -12,6 +12,7 @@ import {
   FileText,
   ScrollText,
   Filter,
+  Package,
 } from "lucide-react";
 
 interface AuditEntryDetailProps {
@@ -85,6 +86,19 @@ export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFil
     </div>
   );
 
+  // `cart_built` and `gate_decision` payloads carry a `line_items` array
+  // (real catalog data: title/category/qty/price_paise) — present only on
+  // those two event types, so this is undefined for everything else.
+  const lineItems = Array.isArray((entry.payload as any)?.line_items)
+    ? ((entry.payload as any).line_items as Array<{
+        item_id?: string;
+        title?: string | null;
+        category?: string;
+        qty?: number;
+        price_paise?: number;
+      }>)
+    : null;
+
   const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
     <div className="flex items-start justify-between gap-4 py-1.5 text-sm">
       <span className="text-[#6B7280]">{label}</span>
@@ -153,6 +167,36 @@ export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFil
           </p>
         )}
       </Section>
+
+      {/* Products — real catalog detail (title/category/price), not just a
+          total, on the two event types that actually carry it. */}
+      {lineItems && lineItems.length > 0 && (
+        <Section title="Products" icon={<Package className="w-3.5 h-3.5 text-[#7C3AED]" />}>
+          <div className="flex flex-col divide-y divide-[#F3F4F6]">
+            {lineItems.map((li, i) => (
+              <div
+                key={li.item_id ?? i}
+                className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm text-[#111827] font-medium truncate">
+                    {li.title || "(item)"}
+                  </p>
+                  <p className="text-[11px] font-mono text-[#6B7280] mt-0.5">
+                    {li.category ?? "—"}
+                    {li.qty != null && li.qty !== 1 ? ` · qty ${li.qty}` : ""}
+                  </p>
+                </div>
+                {li.price_paise != null && (
+                  <span className="font-mono text-xs tabular-nums text-[#111827] shrink-0">
+                    {paiseToRupees(li.price_paise)}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       {/* Hash-chain link — the tamper-evidence mechanism */}
       <Section title="Hash-chain link" icon={<ShieldCheck className="w-3.5 h-3.5 text-[#059669]" />}>

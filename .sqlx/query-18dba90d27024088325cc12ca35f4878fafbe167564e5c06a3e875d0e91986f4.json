@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT merchant_id, category, price_paise FROM catalog_item WHERE item_id = $1",
+  "query": "SELECT merchant_id, category, price_paise, title FROM catalog_item WHERE item_id = $1",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,11 @@
         "ordinal": 2,
         "name": "price_paise",
         "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "title",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -27,8 +32,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "8027b5d089b964e53d38b84af940f5db299ff07e7056a667d4e7f5e69ce48a9d"
+  "hash": "18dba90d27024088325cc12ca35f4878fafbe167564e5c06a3e875d0e91986f4"
 }

@@ -241,6 +241,12 @@ impl Storefront {
         }
 
         let mut line_items = Vec::with_capacity(items.len());
+        //: The audit trail's own record of what was actually in the cart —
+        //: title included, unlike `CartLineItem` below (the SIGNED envelope,
+        //: kept intentionally minimal since it's part of the cart-hash/kernel
+        //: money path). This is a separate, display-only structure, so
+        //: enriching it can never change what the kernel gates on.
+        let mut audit_items = Vec::with_capacity(items.len());
         let mut merchant_id: Option<Uuid> = None;
         let mut total: Paise = 0;
 
@@ -249,7 +255,7 @@ impl Storefront {
                 return Err(AppError::InvalidInput("qty must be positive".into()));
             }
             let r = sqlx::query!(
-                "SELECT merchant_id, category, price_paise FROM catalog_item WHERE item_id = $1",
+                "SELECT merchant_id, category, price_paise, title FROM catalog_item WHERE item_id = $1",
                 req.item_id
             )
             .fetch_optional(&self.pool)
@@ -268,6 +274,13 @@ impl Storefront {
             }
 
             total += r.price_paise.saturating_mul(req.qty);
+            audit_items.push(json!({
+                "item_id": req.item_id,
+                "title": r.title,
+                "category": r.category,
+                "qty": req.qty,
+                "price_paise": r.price_paise,
+            }));
             line_items.push(CartLineItem {
                 item_id: req.item_id,
                 qty: req.qty,
@@ -301,7 +314,12 @@ impl Storefront {
             .append(
                 session_id,
                 domain::AuditEventType::CartBuilt,
-                json!({ "cart_id": cart_id, "total_paise": total, "n_items": line_items.len() }),
+                json!({
+                    "cart_id": cart_id,
+                    "total_paise": total,
+                    "n_items": line_items.len(),
+                    "line_items": audit_items,
+                }),
             )
             .await?;
         repos::set_session_state(&self.pool, session_id, "CART_BUILT").await?;
@@ -385,6 +403,33 @@ impl Storefront {
             rule_cited.as_deref(),
         )
         .await?;
+        // Titles are display-only (the signed `CartLineItem` envelope above
+        // never carries them, by design), so they're looked up separately
+        // here purely to enrich the audit record — this can never affect the
+        // kernel decision already made or the cart_hash it was checked against.
+        let item_ids: Vec<Uuid> = cart.line_items.iter().map(|li| li.item_id).collect();
+        let titles = sqlx::query!(
+            "SELECT item_id, title FROM catalog_item WHERE item_id = ANY($1)",
+            &item_ids
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let title_by_id: std::collections::HashMap<Uuid, String> =
+            titles.into_iter().map(|r| (r.item_id, r.title)).collect();
+        let audit_line_items: Vec<serde_json::Value> = cart
+            .line_items
+            .iter()
+            .map(|li| {
+                json!({
+                    "item_id": li.item_id,
+                    "title": title_by_id.get(&li.item_id),
+                    "category": li.category,
+                    "qty": li.qty,
+                    "price_paise": li.price_paise,
+                })
+            })
+            .collect();
         AuditLedger::new(&self.pool)
             .append(
                 session_id,
@@ -394,6 +439,7 @@ impl Storefront {
                     "rule_cited": rule_cited,
                     "amount_paise": cart.total_paise,
                     "cart_hash": cart.cart_hash(),
+                    "line_items": audit_line_items,
                 }),
             )
             .await?;

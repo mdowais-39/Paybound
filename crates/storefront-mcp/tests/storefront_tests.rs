@@ -241,3 +241,49 @@ async fn cart_rejects_cross_merchant_items(pool: PgPool) {
         .await;
     assert!(err.is_err(), "a cross-merchant cart must be rejected");
 }
+
+/// The real gap this guards: an audit reader could see a cart's total and its
+/// hash, but never WHAT was actually bought — no title, no category. Both
+/// `cart_built` and `gate_decision` now carry a `line_items` array with real
+/// catalog data (never fabricated), without touching the signed `CartLineItem`
+/// envelope the kernel/cart-hash actually gate on.
+#[sqlx::test(migrations = "../../migrations")]
+async fn audit_entries_carry_real_product_detail(pool: PgPool) {
+    let (merchant, cheap, _pricey) = seed_catalog(&pool).await;
+    let session = seed_session(&pool, merchant, 300_000, 300_000).await;
+    let store = Storefront::new(pool.clone());
+
+    let cart = store
+        .create_cart(
+            session,
+            &[CartItemReq {
+                item_id: cheap,
+                qty: 1,
+            }],
+        )
+        .await
+        .unwrap();
+    store.checkout(session, cart.cart_id, false).await.unwrap();
+
+    let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT event_type, payload FROM audit_entry
+         WHERE session_id = $1 AND event_type IN ('cart_built', 'gate_decision')
+         ORDER BY seq",
+    )
+    .bind(session)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2, "expected exactly one cart_built and one gate_decision");
+
+    for (event_type, payload) in rows {
+        let items = payload["line_items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{event_type} payload missing line_items: {payload}"));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Trail Runner Shoe", "{event_type} must carry the real title");
+        assert_eq!(items[0]["category"], "footwear", "{event_type} must carry the real category");
+        assert_eq!(items[0]["price_paise"], 150_000, "{event_type} must carry the real price");
+        assert_eq!(items[0]["qty"], 1);
+    }
+}
