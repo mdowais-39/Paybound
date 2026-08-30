@@ -443,13 +443,17 @@ CASE = {"item_id": "55555555-5555-5555-5555-555555555555", "merchant_id": "m",
         "title": "Phone Case", "category": "accessories", "price_paise": 50000}
 
 
-def test_multi_item_goal_with_unambiguous_matches_composes_one_cart():
-    """Two products, each with exactly one real match — no human input
-    needed for either, so both auto-resolve into ONE cart in a single call."""
+def test_multi_item_goal_asks_for_every_product_even_with_one_match_each():
+    """Two products, each with exactly one real match. Unlike the
+    single-product path, a multi-product goal still asks for EVERY product —
+    a shared cart charges the human for all of them together, so each line
+    item gets an explicit confirmation rather than silently narrowing (e.g.
+    via merchant-scoping) and being added unseen."""
+    shoe = {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+            "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
     mcp = FakeMcp(
         {"verdict": "approved", "payment_link": "https://rzp.io/multi"},
-        search_items=[{"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
-                       "title": "Trail Runner", "category": "footwear", "price_paise": 285000}],
+        search_items=[shoe],
         complement_items={"phone case": [CASE]},
     )
     m = {**mandate(), "allowed_categories": [], "budget_total_paise": 1000000, "per_txn_cap_paise": 1000000}
@@ -459,21 +463,36 @@ def test_multi_item_goal_with_unambiguous_matches_composes_one_cart():
         Intent(query="phone case", category="accessories"),
     ]
 
-    result = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
+    step1 = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
+    assert step1.state == "CHOOSE"
+    assert step1.message == 'Item 1 of 2: I found 1 option for "running shoes" — which would you like?'
+    assert [o["item_id"] for o in step1.options] == [shoe["item_id"]]
+    assert "create_cart" not in mcp.calls  # nothing composed yet — still just a proposal
 
+    step2 = orch.select(
+        "s1", shoe["item_id"], pending_items=step1.pending_items, resolved_items=step1.resolved_items,
+    )
+    assert step2.state == "CHOOSE"
+    assert step2.message == 'Item 2 of 2: I found 1 option for "phone case" — which would you like?'
+    assert [o["item_id"] for o in step2.options] == [CASE["item_id"]]
+    assert "create_cart" not in mcp.calls
+
+    result = orch.select(
+        "s1", CASE["item_id"], pending_items=step2.pending_items, resolved_items=step2.resolved_items,
+    )
     assert result.state == "AUTHORIZED"
     assert len(result.cart["line_items"]) == 2
-    assert {li["item_id"] for li in result.cart["line_items"]} == {
-        "11111111-1111-1111-1111-111111111111", CASE["item_id"],
-    }
-    assert result.amount_paise == 285000 + CASE["price_paise"]
+    assert {li["item_id"] for li in result.cart["line_items"]} == {shoe["item_id"], CASE["item_id"]}
+    assert result.amount_paise == shoe["price_paise"] + CASE["price_paise"]
     # No confidence gate, no upsell offer — an explicit per-item resolution
-    # (auto-match or human pick) is already a stronger signal than either.
+    # (human pick, every time for a multi-product goal) is already a
+    # stronger signal than either.
     assert "checkout" in mcp.calls
 
 
 def test_multi_item_goal_pauses_at_choose_for_the_ambiguous_item():
-    """The first product auto-resolves; the second has 3 plausible matches —
+    """The first product is asked for (even with one match — a multi-product
+    goal always confirms every item); the second has 3 plausible matches —
     the WHOLE request pauses at CHOOSE for that one product, carrying the
     already-resolved first product forward instead of losing it."""
     mcp = FakeMcp(
@@ -485,7 +504,13 @@ def test_multi_item_goal_pauses_at_choose_for_the_ambiguous_item():
     orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
     items = [Intent(query="phone case", category="accessories"), Intent(query="running shoes", category="footwear")]
 
-    result = orch.run("s1", "buy a phone case and running shoes", parsed_intent=items)
+    step1 = orch.run("s1", "buy a phone case and running shoes", parsed_intent=items)
+    assert step1.state == "CHOOSE"
+    assert step1.message.startswith("Item 1 of 2:")
+
+    result = orch.select(
+        "s1", CASE["item_id"], pending_items=step1.pending_items, resolved_items=step1.resolved_items,
+    )
 
     assert result.state == "CHOOSE"
     assert result.message.startswith("Item 2 of 2:")
@@ -520,14 +545,20 @@ def test_select_continues_a_multi_item_goal_into_one_cart():
 
 
 def test_multi_item_no_match_aborts_the_whole_request_cleanly():
-    """One product genuinely has no match — the request aborts entirely,
-    never a cart with only some of what was asked for."""
+    """The first product resolves via CHOOSE (multi-product: always asked,
+    even with one match); the second genuinely has no match — the request
+    aborts entirely, never a cart with only some of what was asked for."""
     mcp = FakeMcp({"verdict": "approved"}, search_items=[CASE], complement_items={"unicorn": []})
     m = {**mandate(), "allowed_categories": []}
     orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
     items = [Intent(query="phone case"), Intent(query="unicorn")]
 
-    result = orch.run("s1", "buy a phone case and a unicorn", parsed_intent=items)
+    step1 = orch.run("s1", "buy a phone case and a unicorn", parsed_intent=items)
+    assert step1.state == "CHOOSE"
+
+    result = orch.select(
+        "s1", CASE["item_id"], pending_items=step1.pending_items, resolved_items=step1.resolved_items,
+    )
 
     assert result.state == "CLARIFY"
     assert "Nothing was added to your cart" in result.message
@@ -536,11 +567,13 @@ def test_multi_item_no_match_aborts_the_whole_request_cleanly():
 
 def test_parse_splits_a_multi_product_goal_into_separate_items():
     """The real parse path (no injected Intent list) — a scripted LLM
-    response with an `items` array drives the same multi-product flow."""
+    response with an `items` array drives the same multi-product flow, still
+    asking for each product even though each has just one match."""
+    shoe = {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+            "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
     mcp = FakeMcp(
         {"verdict": "approved"},
-        search_items=[{"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
-                       "title": "Trail Runner", "category": "footwear", "price_paise": 285000}],
+        search_items=[shoe],
         complement_items={"phone case": [CASE]},
     )
     m = {**mandate(), "allowed_categories": []}
@@ -553,11 +586,20 @@ def test_parse_splits_a_multi_product_goal_into_separate_items():
     })
     orch = Orchestrator(mcp, llm, FakeDb(m))
 
-    result = orch.run("s1", "buy running shoes and a phone case")
-
-    assert result.state == "AUTHORIZED"
-    assert len(result.cart["line_items"]) == 2
+    step1 = orch.run("s1", "buy running shoes and a phone case")
+    assert step1.state == "CHOOSE"
     assert llm.calls == 1
+
+    result = orch.select(
+        "s1", shoe["item_id"], pending_items=step1.pending_items, resolved_items=step1.resolved_items,
+    )
+    step_result = orch.select(
+        "s1", CASE["item_id"], pending_items=result.pending_items, resolved_items=result.resolved_items,
+    ) if result.state == "CHOOSE" else result
+
+    assert step_result.state == "AUTHORIZED"
+    assert len(step_result.cart["line_items"]) == 2
+    assert llm.calls == 1  # no extra LLM calls resolving the rest — deterministic picks only
 
 
 def test_multi_item_second_choose_is_scoped_to_the_first_items_merchant():
@@ -566,11 +608,12 @@ def test_multi_item_second_choose_is_scoped_to_the_first_items_merchant():
     explained refusal at the SECOND item's search, before any CHOOSE is even
     offered for an incompatible option, not as a raw create_cart error after
     the human has already picked."""
+    shoe = {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+            "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
     other_merchant_case = {**CASE, "merchant_id": "other-merchant"}
     mcp = FakeMcp(
         {"verdict": "approved"},
-        search_items=[{"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
-                       "title": "Trail Runner", "category": "footwear", "price_paise": 285000}],
+        search_items=[shoe],
         complement_items={"phone case": [other_merchant_case]},
     )
     m = {**mandate(), "allowed_categories": []}
@@ -580,7 +623,12 @@ def test_multi_item_second_choose_is_scoped_to_the_first_items_merchant():
         Intent(query="phone case", category="accessories"),
     ]
 
-    result = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
+    step1 = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
+    assert step1.state == "CHOOSE"
+
+    result = orch.select(
+        "s1", shoe["item_id"], pending_items=step1.pending_items, resolved_items=step1.resolved_items,
+    )
 
     assert result.state == "CLARIFY"
     assert "different seller" in result.message

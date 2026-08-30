@@ -201,11 +201,15 @@ class Orchestrator(BaseAgent):
         both by `run()` (resolved=[]) and by `select()`'s continuation after a
         human picks one of several options for a mid-list product.
 
-        Auto-continues past any product with exactly one match — the agent
-        still never guesses among several candidates, it just doesn't need a
-        human's help when there's only one real answer. The first product
-        that's genuinely ambiguous pauses the WHOLE request at CHOOSE (not
-        just that product) via `pending_items`/`resolved_items`, so nothing
+        For a genuinely single-product goal, auto-continues past exactly one
+        match — the agent doesn't need a human's help when there's only one
+        real answer. For a MULTI-product goal, every product gets a CHOOSE —
+        even one with only a single candidate — so the human explicitly
+        confirms each line item going into a cart that charges them together,
+        rather than one silently narrowing (e.g. via the merchant-scoping
+        below) and being added without ever being shown. The first product
+        that needs a human pick pauses the WHOLE request at CHOOSE (not just
+        that product) via `pending_items`/`resolved_items`, so nothing
         already resolved is lost. A product with NO match aborts the whole
         request cleanly — never a cart with only some of what was asked for.
 
@@ -215,10 +219,18 @@ class Orchestrator(BaseAgent):
         merchant only (same precedent as `find_upsell`'s single-merchant
         filter) — catching an incompatible pick as a clean explained refusal
         *before* a cart is ever built, instead of a raw tool error surfacing
-        once every product is already resolved."""
+        once every product is already resolved. This is exactly the kind of
+        narrowing that makes always-CHOOSE-for-multi-product matter: without
+        it, a product that had several real options before merchant-scoping
+        can drop to one and get silently added, invisibly to the human."""
         emit = _stage_emitter(on_stage)
         resolved = list(resolved or [])
         remaining = list(items)
+        #: Computed once, over the WHOLE exchange (not just what's left in
+        #: this call) — stays constant as the loop consumes `remaining` into
+        #: `resolved`, so item 2 of 2 is still recognized as multi-product
+        #: even though only one Intent remains to process by then.
+        is_multi_product = (len(resolved) + len(remaining)) > 1
         emit("searching", "active")
         while remaining:
             intent = remaining[0]
@@ -249,19 +261,24 @@ class Orchestrator(BaseAgent):
                         )
                 return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
 
-            if len(candidates) > 1:
+            if len(candidates) > 1 or is_multi_product:
                 # More than one plausible match for THIS product → the agent
                 # does not get to guess which brand/price/style the human
                 # wants. Offer them, don't silently buy the top-ranked one —
                 # same principle as the single-product path, just paused
-                # mid-list instead of at the start.
+                # mid-list instead of at the start. For a multi-product goal
+                # this ALSO fires with exactly one candidate — every line
+                # item in a shared cart gets an explicit human confirmation,
+                # not just the ones that happened to stay ambiguous after
+                # merchant-scoping.
                 emit("searching", "success")
                 options = candidates[:MAX_OPTIONS]
                 total = len(resolved) + len(remaining)
                 prefix = f"Item {len(resolved) + 1} of {total}: " if total > 1 else ""
+                noun = "option" if len(options) == 1 else "options"
                 return OrchestratorResult(
                     state="CHOOSE",
-                    message=f'{prefix}I found {len(options)} options for "{intent.query}" — which would you like?',
+                    message=f'{prefix}I found {len(options)} {noun} for "{intent.query}" — which would you like?',
                     options=[
                         {
                             "item_id": c.item_id,
@@ -276,9 +293,10 @@ class Orchestrator(BaseAgent):
                     resolved_items=[_candidate_to_dict(c) for c in resolved] or None,
                 )
 
-            # Exactly one match for this product — no ambiguity, nothing for
-            # a human to decide, so it auto-resolves and the loop moves on to
-            # the next product (if any).
+            # Only reachable here with exactly one candidate on a genuinely
+            # single-product goal (a multi-product goal always paused above,
+            # even at one candidate) — no ambiguity, nothing for a human to
+            # decide, so it auto-resolves.
             resolved.append(candidates[0])
             remaining = remaining[1:]
         emit("searching", "success")
