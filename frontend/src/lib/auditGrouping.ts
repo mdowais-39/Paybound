@@ -12,22 +12,40 @@
 
 import { AgentRun } from "./types";
 
-/** Which run's window a timestamp (ms since epoch) falls into. Runs happen
- * sequentially within a session (never meaningfully overlap), so: an exact
- * window match wins; a timestamp before every run (e.g. the session's own
- * creation event, which precedes any run) attaches to the EARLIEST run; a
- * timestamp after every run's window attaches to the LATEST run. Returns
- * null only when there are no runs at all to attribute to (e.g. a session
- * that was created but never actually used for a purchase). */
+/** Which run's window a timestamp (ms since epoch) belongs to. An exact
+ * window match wins outright. Otherwise, attach to whichever run's window is
+ * TEMPORALLY NEAREST (by distance to the closer edge) — not blindly the
+ * earliest or the latest run in the whole list.
+ *
+ * That "nearest" fallback is deliberate defense-in-depth, not just a tidier
+ * default: `created_at`/`updated_at` come from the Python API's `now()`
+ * (Postgres's own clock), while each audit entry's own `ts` was, until a
+ * backend fix, stamped from the Rust process's HOST clock — a different
+ * clock that measurably drifts from Postgres's (observed ~1s on this stack,
+ * commonly Docker Desktop's containerized-Postgres-vs-host skew). That drift
+ * let a run's own late-stage entries (token_issued, payment_effect) land a
+ * few hundred ms past their own `updated_at`, and the old "no match → latest
+ * run" rule then dumped them onto whatever run happened to be newest in the
+ * mandate — a completely unrelated cart. The backend now sources `ts` from
+ * Postgres too, which should make near-misses rare going forward, but any
+ * entry that still lands just outside its true run's window (residual
+ * skew, or older data written before the backend fix) is still one edge
+ * away from the RIGHT run, and light-years from "whatever cart is newest" —
+ * so nearest-by-distance degrades gracefully where the old rule failed
+ * catastrophically. Returns null only when there are no runs at all to
+ * attribute to (e.g. a session created but never actually used). */
 export function attributeTimestampToRun(tsMs: number, runs: AgentRun[]): string | null {
   if (runs.length === 0) return null;
-  const sorted = [...runs].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-  const exact = sorted.find((r) => {
+  let bestId: string | null = null;
+  let bestDist = Infinity;
+  for (const r of runs) {
     const start = Date.parse(r.created_at);
     const end = Date.parse(r.updated_at);
-    return tsMs >= start && tsMs <= end;
-  });
-  if (exact) return exact.run_id;
-  if (tsMs < Date.parse(sorted[0].created_at)) return sorted[0].run_id;
-  return sorted[sorted.length - 1].run_id;
+    const dist = tsMs < start ? start - tsMs : tsMs > end ? tsMs - end : 0;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestId = r.run_id;
+    }
+  }
+  return bestId;
 }

@@ -57,7 +57,20 @@ impl<'a> AuditLedger<'a> {
         .await
         .map_err(db_err)?;
 
-        let ts = OffsetDateTime::now_utc();
+        // Sourced from Postgres's own clock, NOT the Rust process's host clock
+        // (`OffsetDateTime::now_utc()`). The frontend attributes each audit
+        // entry to a console run by comparing this `ts` against `agent_run.
+        // updated_at` — which the Python API sets via SQL `now()`, i.e.
+        // Postgres's clock. If Rust stamped `ts` from the host instead, any
+        // drift between the host and the (often containerized) Postgres clock
+        // — real and measured at ~1s on this stack — lets a run's own late
+        // audit entries fall outside its own window and get misattributed to
+        // an unrelated cart. Same clock on both sides removes the drift
+        // entirely rather than papering over it with a tolerance window.
+        let ts: OffsetDateTime = sqlx::query_scalar!(r#"SELECT now() AS "ts!""#)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
         let et = event_type.as_db_str();
         let this_hash = compute_entry_hash(prev_hash.as_deref(), et, &payload, ts_micros(ts));
 

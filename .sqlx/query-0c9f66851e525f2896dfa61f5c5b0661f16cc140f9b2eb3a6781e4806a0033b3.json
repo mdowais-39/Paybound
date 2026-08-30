@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE audit_entry SET this_hash = $1 WHERE entry_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0c9f66851e525f2896dfa61f5c5b0661f16cc140f9b2eb3a6781e4806a0033b3"
+}

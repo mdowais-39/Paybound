@@ -38,19 +38,42 @@ describe("attributeTimestampToRun", () => {
     expect(attributeTimestampToRun(insideB, [RUN_A, RUN_B])).toBe("run_b");
   });
 
-  it("attaches a timestamp before every run (e.g. session_created) to the EARLIEST run", () => {
+  it("attaches a timestamp before every run (e.g. session_created) to the nearest (earliest) run", () => {
     const beforeEverything = Date.parse("2026-08-28T07:22:46.000Z");
     expect(attributeTimestampToRun(beforeEverything, [RUN_A, RUN_B])).toBe("run_a");
     // Order of the input array must not matter.
     expect(attributeTimestampToRun(beforeEverything, [RUN_B, RUN_A])).toBe("run_a");
   });
 
-  it("attaches a timestamp after every run's window to the LATEST run", () => {
+  it("attaches a timestamp after every run's window to the nearest (latest) run", () => {
     const afterEverything = Date.parse("2026-08-28T09:05:00.000Z");
     expect(attributeTimestampToRun(afterEverything, [RUN_A, RUN_B])).toBe("run_b");
   });
 
   it("returns null when there are no runs to attribute to at all", () => {
     expect(attributeTimestampToRun(Date.now(), [])).toBeNull();
+  });
+
+  // The actual production bug: a run's own late-stage audit entry (token_issued
+  // / payment_effect), stamped by a clock that had drifted a few hundred ms
+  // from the one that set `updated_at`, landed just PAST its own run's window.
+  // The old rule ("no exact match → attach to the newest run in the whole
+  // mandate") then dumped it onto a THIRD, unrelated, much-later run. Nearest-
+  // by-distance must attach it back to the run it actually came from instead.
+  it("attaches a near-miss just past an EARLIER run's window to that run, not the newest run overall", () => {
+    const RUN_C = run("run_c", "2026-08-29T07:00:27.559Z", "2026-08-29T07:01:23.191Z"); // AUTHORIZED ₹3,656, hours after A and B
+    // 307ms past RUN_B's own updated_at — exactly the drift observed in
+    // production between the Rust host clock and Postgres's clock.
+    const justPastRunB = Date.parse("2026-08-28T09:04:16.989Z");
+    expect(attributeTimestampToRun(justPastRunB, [RUN_A, RUN_B, RUN_C])).toBe("run_b");
+    // Order of the input array must not matter.
+    expect(attributeTimestampToRun(justPastRunB, [RUN_C, RUN_A, RUN_B])).toBe("run_b");
+  });
+
+  it("still prefers a genuinely closer LATER run over a further-away earlier one", () => {
+    const RUN_C = run("run_c", "2026-08-29T07:00:27.559Z", "2026-08-29T07:01:23.191Z");
+    // Almost 22 hours after RUN_B ends, but ~3.5s before RUN_C starts — nearer to C.
+    const closerToC = Date.parse("2026-08-29T07:00:24.000Z");
+    expect(attributeTimestampToRun(closerToC, [RUN_A, RUN_B, RUN_C])).toBe("run_c");
   });
 });
