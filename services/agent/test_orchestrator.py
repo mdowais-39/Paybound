@@ -602,12 +602,12 @@ def test_parse_splits_a_multi_product_goal_into_separate_items():
     assert llm.calls == 1  # no extra LLM calls resolving the rest — deterministic picks only
 
 
-def test_multi_item_second_choose_is_scoped_to_the_first_items_merchant():
-    """The real bug this guards: two products from DIFFERENT merchants must
-    never both reach create_cart (single-merchant carts) — caught as a clean
-    explained refusal at the SECOND item's search, before any CHOOSE is even
-    offered for an incompatible option, not as a raw create_cart error after
-    the human has already picked."""
+def test_multi_item_options_are_never_narrowed_by_an_earlier_pick():
+    """The real bug this guards (reported live): item 2's search must show
+    the SAME options a standalone search for it would — never narrowed by
+    which merchant item 1 happened to resolve to. So an incompatible option
+    (a different seller than item 1) still shows up as a real CHOOSE option
+    for item 2, not silently hidden."""
     shoe = {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
             "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
     other_merchant_case = {**CASE, "merchant_id": "other-merchant"}
@@ -616,7 +616,7 @@ def test_multi_item_second_choose_is_scoped_to_the_first_items_merchant():
         search_items=[shoe],
         complement_items={"phone case": [other_merchant_case]},
     )
-    m = {**mandate(), "allowed_categories": []}
+    m = {**mandate(), "allowed_categories": [], "allowed_merchants": []}
     orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
     items = [
         Intent(query="running shoes", category="footwear"),
@@ -626,8 +626,43 @@ def test_multi_item_second_choose_is_scoped_to_the_first_items_merchant():
     step1 = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
     assert step1.state == "CHOOSE"
 
-    result = orch.select(
+    step2 = orch.select(
         "s1", shoe["item_id"], pending_items=step1.pending_items, resolved_items=step1.resolved_items,
+    )
+    assert step2.state == "CHOOSE"
+    assert [o["item_id"] for o in step2.options] == [other_merchant_case["item_id"]]
+
+
+def test_multi_item_incompatible_pick_is_caught_at_selection_not_search():
+    """Two products from DIFFERENT merchants must never both reach
+    create_cart (single-merchant carts) — but since options are no longer
+    narrowed by search, the conflict is only knowable once the human actually
+    PICKS the incompatible option, and must be caught right there with a
+    clean explained refusal, not a raw create_cart error."""
+    shoe = {"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+            "title": "Trail Runner", "category": "footwear", "price_paise": 285000}
+    other_merchant_case = {**CASE, "merchant_id": "other-merchant"}
+    mcp = FakeMcp(
+        {"verdict": "approved"},
+        search_items=[shoe],
+        complement_items={"phone case": [other_merchant_case]},
+    )
+    m = {**mandate(), "allowed_categories": [], "allowed_merchants": []}
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
+    items = [
+        Intent(query="running shoes", category="footwear"),
+        Intent(query="phone case", category="accessories"),
+    ]
+
+    step1 = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
+    step2 = orch.select(
+        "s1", shoe["item_id"], pending_items=step1.pending_items, resolved_items=step1.resolved_items,
+    )
+    assert step2.state == "CHOOSE"  # item 2's incompatible option IS shown (see test above)
+
+    result = orch.select(
+        "s1", other_merchant_case["item_id"],
+        pending_items=step2.pending_items, resolved_items=step2.resolved_items,
     )
 
     assert result.state == "CLARIFY"

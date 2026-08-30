@@ -205,24 +205,22 @@ class Orchestrator(BaseAgent):
         match — the agent doesn't need a human's help when there's only one
         real answer. For a MULTI-product goal, every product gets a CHOOSE —
         even one with only a single candidate — so the human explicitly
-        confirms each line item going into a cart that charges them together,
-        rather than one silently narrowing (e.g. via the merchant-scoping
-        below) and being added without ever being shown. The first product
-        that needs a human pick pauses the WHOLE request at CHOOSE (not just
-        that product) via `pending_items`/`resolved_items`, so nothing
-        already resolved is lost. A product with NO match aborts the whole
-        request cleanly — never a cart with only some of what was asked for.
+        confirms each line item going into a cart that charges them together.
+        The first product that needs a human pick pauses the WHOLE request at
+        CHOOSE (not just that product) via `pending_items`/`resolved_items`,
+        so nothing already resolved is lost. A product with NO match aborts
+        the whole request cleanly — never a cart with only some of what was
+        asked for.
 
-        A cart is single-merchant (the storefront's own `create_cart`
-        constraint, mirroring the kernel's `check_merchant`), so once one
-        product resolves, every later product's search is scoped to THAT
-        merchant only (same precedent as `find_upsell`'s single-merchant
-        filter) — catching an incompatible pick as a clean explained refusal
-        *before* a cart is ever built, instead of a raw tool error surfacing
-        once every product is already resolved. This is exactly the kind of
-        narrowing that makes always-CHOOSE-for-multi-product matter: without
-        it, a product that had several real options before merchant-scoping
-        can drop to one and get silently added, invisibly to the human."""
+        Each product's search is bounded ONLY by the mandate's own allowed
+        categories/merchants — the SAME options a standalone search for that
+        product would show, never narrowed by what an earlier product in this
+        same order happened to resolve to. A cart is still single-merchant
+        (the storefront's own `create_cart` constraint, mirroring the
+        kernel's `check_merchant`), but that compatibility is checked once the
+        human actually PICKS an option (`select()`), not by hiding options at
+        search time — a real match the human never gets to see is a worse
+        experience than a clean, explained refusal on an incompatible pick."""
         emit = _stage_emitter(on_stage)
         resolved = list(resolved or [])
         remaining = list(items)
@@ -234,31 +232,20 @@ class Orchestrator(BaseAgent):
         emit("searching", "active")
         while remaining:
             intent = remaining[0]
-            already_merchants = {c.merchant_id for c in resolved if c.merchant_id}
-            merchant_scope = list(already_merchants) if already_merchants else mandate.get("allowed_merchants")
             outcome = self.discovery.search(
                 intent,
                 allowed_categories=mandate.get("allowed_categories"),
-                allowed_merchants=merchant_scope,
+                allowed_merchants=mandate.get("allowed_merchants"),
             )
             candidates = outcome.candidates
             if not candidates:
                 emit("searching", "success")
-                if already_merchants and outcome.reason == "merchant":
+                q = self._no_match_message(intent, outcome, mandate)
+                if resolved:
                     q = (
-                        f'I found matches for "{intent.query}", but only from a '
-                        f"different seller than the other item(s) in this order — "
-                        f"a single order can only include products from one "
-                        f"seller. Nothing was added to your cart; try that item "
-                        f"on its own, or ask for one from the same seller."
+                        f"{q} Nothing was added to your cart — the other item(s) "
+                        f"in this request weren't purchased either."
                     )
-                else:
-                    q = self._no_match_message(intent, outcome, mandate)
-                    if resolved:
-                        q = (
-                            f"{q} Nothing was added to your cart — the other item(s) "
-                            f"in this request weren't purchased either."
-                        )
                 return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
 
             if len(candidates) > 1 or is_multi_product:
@@ -364,14 +351,24 @@ class Orchestrator(BaseAgent):
             merchant_id=item["merchant_id"],
         )
 
-        if pending_items:
-            remaining = [_intent_from_dict(d) for d in pending_items]
-            resolved = [_candidate_from_dict(d) for d in (resolved_items or [])] + [candidate]
-            return self._resolve_items(session_id, remaining, mandate, resolved=resolved, on_stage=on_stage)
-        if resolved_items:
+        if pending_items or resolved_items:
+            # A pick mid-way through (or ending) a multi-product goal —
+            # options were shown unscoped by merchant (the same set a
+            # standalone search would show), so THIS is where an incompatible
+            # pick is actually caught: a single order is single-merchant
+            # (the storefront's own `create_cart` constraint), and a raw
+            # create_cart error surfacing after every product is already
+            # resolved reads far worse than a clean, immediate explanation.
+            already = [_candidate_from_dict(d) for d in (resolved_items or [])]
+            conflict = self._merchant_conflict(candidate, already)
+            if conflict is not None:
+                return conflict
+            resolved = already + [candidate]
+            if pending_items:
+                remaining = [_intent_from_dict(d) for d in pending_items]
+                return self._resolve_items(session_id, remaining, mandate, resolved=resolved, on_stage=on_stage)
             # The last product of a multi-product goal — everything resolved
             # across this whole exchange goes into one cart together.
-            resolved = [_candidate_from_dict(d) for d in resolved_items] + [candidate]
             return self._compose_and_checkout_many(session_id, resolved, on_stage=on_stage)
 
         # The ordinary single-product path — unchanged.
@@ -472,12 +469,12 @@ class Orchestrator(BaseAgent):
         `skip_confidence_gate` for a single explicit pick. Offering an upsell
         would also mean guessing which ONE of several items to pair it with.
 
-        `_resolve_items` already scopes every search to the merchant of
-        whatever's resolved so far, so this shouldn't normally see a mismatch
-        — but a human can round-trip stale CHOOSE options from before a
-        backend change, so this re-checks before ever calling `create_cart`,
-        turning what would otherwise be a raw tool error into the same clean
-        explained refusal `_resolve_items` gives when it catches this itself."""
+        `select()` already checks each pick against the merchant of whatever's
+        resolved so far (`_merchant_conflict`), so this shouldn't normally see
+        a mismatch — but a human can round-trip stale CHOOSE options from
+        before a backend change, so this re-checks before ever calling
+        `create_cart` as a last defense-in-depth line, turning what would
+        otherwise be a raw tool error into the same clean explained refusal."""
         emit = _stage_emitter(on_stage)
         merchants = {c.merchant_id for c in items if c.merchant_id}
         if len(merchants) > 1:
@@ -629,6 +626,30 @@ class Orchestrator(BaseAgent):
     @staticmethod
     def _rupees(paise: int | None) -> str:
         return f"₹{(paise or 0) // 100:,}"
+
+    @staticmethod
+    def _merchant_conflict(
+        candidate: Candidate, already_resolved: list[Candidate]
+    ) -> OrchestratorResult | None:
+        """A single order is single-merchant (the storefront's own
+        `create_cart` constraint, mirroring the kernel's `check_merchant`).
+        Options are shown UNSCOPED by merchant — the same real options a
+        standalone search would show — so this is where an incompatible pick
+        is actually caught: cleanly, immediately, and only for the specific
+        pick that conflicts, rather than hiding options the human never gets
+        to see. Returns None (no conflict) when nothing's resolved yet, or
+        the pick matches every already-resolved item's merchant."""
+        prior = {c.merchant_id for c in already_resolved if c.merchant_id}
+        if prior and candidate.merchant_id not in prior:
+            q = (
+                f"'{candidate.title}' is from a different seller than the "
+                f"other item(s) already picked for this order — a single "
+                f"order can only include products from one seller. Nothing "
+                f"was added to your cart; try that item on its own, or pick "
+                f"one from the same seller."
+            )
+            return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
+        return None
 
     def _no_match_message(self, intent: Intent, outcome: SearchOutcome, mandate: dict) -> str:
         """Turn 'search came up empty' into a specific, actionable sentence so
