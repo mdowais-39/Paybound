@@ -7,6 +7,7 @@ import { OutcomeCard } from "./OutcomeCard";
 import { ChoicePicker } from "./ChoicePicker";
 import { UpsellPrompt } from "./UpsellPrompt";
 import { Pill } from "../shared/Pill";
+import { CopyButton } from "../shared/CopyButton";
 import { paiseToRupees, paiseToRupeesPlain } from "../../lib/money";
 import {
   ShoppingBag,
@@ -123,8 +124,9 @@ export const CartDetailView: React.FC<CartDetailViewProps> = ({
             <span className="font-mono text-xs text-[#6B7280] font-semibold tracking-wider uppercase">
               CART SESSION
             </span>
-            <span className="font-mono text-xs px-2 py-0.5 rounded bg-[#F3F4F6] text-[#111827] border border-[#E5E7EB] font-bold">
+            <span className="inline-flex items-center gap-1 font-mono text-xs px-2 py-0.5 rounded bg-[#F3F4F6] text-[#111827] border border-[#E5E7EB] font-bold">
               {cart.cartId}
+              {cart.cartId && <CopyButton value={cart.cartId} label="cart ID" />}
             </span>
             {isApproved && <Pill variant="green">Kernel Authorized</Pill>}
             {isRefused && <Pill variant="amber">Policy Refused</Pill>}

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Mandate } from "../../lib/types";
 import { Pill } from "../shared/Pill";
 import { Button } from "../shared/Button";
+import { CopyButton } from "../shared/CopyButton";
 import { SpendMeter } from "../layout/SpendMeter";
 import { paiseToRupeesPlain } from "../../lib/money";
 import { ExternalLink, ShieldAlert, ArrowRight } from "lucide-react";
@@ -177,8 +178,11 @@ export const MandateCard: React.FC<MandateCardProps> = ({
 
           <div>
             <span className="text-[#9CA3AF] block text-[10.5px] uppercase">Mandate ID</span>
-            <span className="text-[#2563EB] truncate block font-mono">
-              {mandate.mandate_id.substring(0, 14)}...
+            <span className="flex items-center gap-1 text-[#2563EB] font-mono">
+              <span className="truncate" title={mandate.mandate_id}>
+                {mandate.mandate_id.substring(0, 14)}...
+              </span>
+              <CopyButton value={mandate.mandate_id} label="mandate ID" />
             </span>
           </div>
         </div>

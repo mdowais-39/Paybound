@@ -6,6 +6,7 @@ import { CartDetailView } from "../components/shop/CartDetailView";
 import { CampaignBanner } from "../components/shop/CampaignBanner";
 import { GoalInput } from "../components/shop/GoalInput";
 import { Pill } from "../components/shared/Pill";
+import { CopyButton } from "../components/shared/CopyButton";
 import { SpendMeter } from "../components/layout/SpendMeter";
 import {
   runAgentStream,
@@ -485,8 +486,9 @@ export const ShopPage: React.FC = () => {
                 <Pill variant="green">Active</Pill>
               ) : null}
             </div>
-            <p className="font-mono text-xs text-[#6B7280]">
-              Bound Mandate: {activeMandate?.mandate_id || "No mandate selected"}
+            <p className="font-mono text-xs text-[#6B7280] flex items-center gap-1">
+              <span>Bound Mandate: {activeMandate?.mandate_id || "No mandate selected"}</span>
+              {activeMandate && <CopyButton value={activeMandate.mandate_id} label="mandate ID" />}
             </p>
           </div>
         </div>

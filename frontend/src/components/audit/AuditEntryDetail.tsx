@@ -4,12 +4,11 @@ import { getAuditEntryContext } from "../../lib/api";
 import { getAuditEventMeta } from "../../lib/verdictMeta";
 import { paiseToRupees } from "../../lib/money";
 import { Pill } from "../shared/Pill";
+import { CopyButton } from "../shared/CopyButton";
 import {
   ShieldCheck,
   Shield,
   ArrowRight,
-  Copy,
-  Check,
   FileText,
   ScrollText,
   Filter,
@@ -40,7 +39,6 @@ const verdictVariant = (v: string | null): "green" | "amber" | "violet" | "slate
 export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFilterSession }) => {
   const [ctx, setCtx] = useState<AuditEntryContext | null>(null);
   const [ctxError, setCtxError] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setCtx(null);
@@ -70,11 +68,6 @@ export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFil
   }
 
   const meta = getAuditEventMeta(entry.event_type);
-  const copyHash = () => {
-    navigator.clipboard.writeText(entry.this_hash);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   const Section: React.FC<{ title: string; icon?: React.ReactNode; children: React.ReactNode }> = ({
     title,
@@ -130,22 +123,23 @@ export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFil
               {new Date(entry.ts).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" })}
             </span>
           </Row>
-          {onFilterSession ? (
-            <Row label="Session">
-              <button
-                type="button"
-                onClick={() => onFilterSession(entry.session_id)}
-                className="font-mono text-xs text-[#2563EB] hover:underline inline-flex items-center gap-1 cursor-pointer"
-                title="Show only this session's events"
-              >
-                {entry.session_id.substring(0, 12)}… <Filter className="w-3 h-3" />
-              </button>
-            </Row>
-          ) : (
-            <Row label="Session">
-              <span className="font-mono text-xs">{entry.session_id.substring(0, 12)}…</span>
-            </Row>
-          )}
+          <Row label="Session">
+            <span className="inline-flex items-center gap-1">
+              {onFilterSession ? (
+                <button
+                  type="button"
+                  onClick={() => onFilterSession(entry.session_id)}
+                  className="font-mono text-xs text-[#2563EB] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                  title="Show only this session's events"
+                >
+                  {entry.session_id.substring(0, 12)}… <Filter className="w-3 h-3" />
+                </button>
+              ) : (
+                <span className="font-mono text-xs">{entry.session_id.substring(0, 12)}…</span>
+              )}
+              <CopyButton value={entry.session_id} label="session ID" />
+            </span>
+          </Row>
         </div>
       </Section>
 
@@ -170,14 +164,7 @@ export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFil
           <span className="font-semibold text-[#111827]" title={entry.this_hash}>
             {truncateHash(entry.this_hash)}
           </span>
-          <button
-            type="button"
-            onClick={copyHash}
-            className="ml-auto text-[#6B7280] hover:text-[#111827] transition-colors p-0.5 cursor-pointer"
-            title="Copy this_hash"
-          >
-            {copied ? <Check className="w-3.5 h-3.5 text-[#059669]" /> : <Copy className="w-3.5 h-3.5" />}
-          </button>
+          <CopyButton value={entry.this_hash} label="this_hash" className="ml-auto" />
         </div>
         <p className="text-[11px] text-[#9CA3AF] mt-2">
           Each entry's hash folds in the previous entry's — altering any past record breaks every link after it.
@@ -192,6 +179,12 @@ export const AuditEntryDetail: React.FC<AuditEntryDetailProps> = ({ entry, onFil
           <p className="text-xs text-[#9CA3AF] font-mono">Loading…</p>
         ) : (
           <div className="flex flex-col gap-1.5">
+            <Row label="Mandate">
+              <span className="inline-flex items-center gap-1 font-mono text-xs" title={ctx.mandate_id}>
+                {ctx.mandate_id.substring(0, 12)}…
+                <CopyButton value={ctx.mandate_id} label="mandate ID" />
+              </span>
+            </Row>
             <Row label="Payer">
               <span className="font-mono text-xs">{ctx.payer}</span>
             </Row>
