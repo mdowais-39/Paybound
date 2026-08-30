@@ -82,3 +82,16 @@ class OrchestratorResult:
     #: Not yet in the cart; the human accepts or declines it via
     #: POST /sessions/{id}/upsell. The agent never adds it on its own.
     upsell_suggestion: dict | None = None
+    #: Present only in state=CHOOSE for a MULTI-product goal ("buy running
+    #: shoes and a phone case") — the still-unresolved products, in order, as
+    #: plain dicts ({query, max_price_paise, category}). The client echoes
+    #: this straight back on POST /sessions/{id}/select so the orchestrator
+    #: (stateless between calls) can resume where it left off. None/absent
+    #: for an ordinary single-product CHOOSE.
+    pending_items: list[dict] | None = None
+    #: Alongside `pending_items` — the products from this SAME multi-product
+    #: goal already resolved (auto-matched or human-picked), as plain dicts
+    #: ({item_id, title, category, price_paise, merchant_id}), so they end up
+    #: in ONE cart together with whatever's picked next rather than each
+    #: becoming its own separate purchase.
+    resolved_items: list[dict] | None = None

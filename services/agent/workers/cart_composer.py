@@ -82,6 +82,36 @@ class CartComposer(BaseAgent):
             display_items=display_items,
         )
 
+    def compose_many(self, session_id: str, items: list[Candidate]) -> ComposedCart:
+        """Build and submit a cart from MULTIPLE independently-resolved items —
+        the multi-product path ("buy running shoes and a phone case"). Each
+        item already passed discovery on its own (auto-resolved on an
+        unambiguous match, or explicitly human-picked via CHOOSE) before
+        reaching here, so there's no single `Intent` left to score confidence
+        against and no upsell offered — the confidence gate and upsell are
+        both explicitly skipped by the caller for this path (see
+        Orchestrator._compose_and_checkout_many)."""
+        tool_items = [{"item_id": c.item_id, "qty": 1} for c in items]
+        display_items = [
+            {
+                "item_id": c.item_id,
+                "title": c.title,
+                "qty": 1,
+                "price_paise": c.price_paise,
+                "category": c.category,
+                "is_upsell": False,
+            }
+            for c in items
+        ]
+        cart = self.call_tool("create_cart", {"session_id": session_id, "items": tool_items})
+        return ComposedCart(
+            cart_id=cart["cart_id"],
+            total_paise=cart["total_paise"],
+            line_items=cart.get("line_items", []),
+            confidence=1.0,
+            display_items=display_items,
+        )
+
     def find_upsell(
         self, chosen: Candidate, allowed_categories: list[str] | None, intent: Intent
     ) -> dict | None:

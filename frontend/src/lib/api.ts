@@ -282,16 +282,22 @@ export function runAgentStream(
   );
 }
 
+/** `pendingItems`/`resolvedItems` are only present when resuming a CHOOSE
+ * mid-way through a multi-product goal — pass the exact values that
+ * OrchestratorResult carried, unchanged, so the stateless orchestrator
+ * resumes the same multi-product exchange instead of starting a new one. */
 export function selectOptionStream(
   sessionId: string,
   itemId: string,
   onStage: OnStage,
   runId?: string,
   goal?: string,
+  pendingItems?: Record<string, unknown>[] | null,
+  resolvedItems?: Record<string, unknown>[] | null,
 ): Promise<OrchestratorResult> {
   return streamOrchestrate(
     `${AGENT_URL}/sessions/${encodeURIComponent(sessionId)}/select/stream`,
-    { item_id: itemId, run_id: runId, goal },
+    { item_id: itemId, run_id: runId, goal, pending_items: pendingItems, resolved_items: resolvedItems },
     onStage,
     "selectOption",
   );

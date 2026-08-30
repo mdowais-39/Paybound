@@ -118,6 +118,12 @@ class SelectRequest(BaseModel):
     item_id: str
     run_id: str | None = None
     goal: str | None = None
+    # Present only when resuming a multi-product CHOOSE (the orchestrator
+    # returned pending_items/resolved_items) — echoed straight back so the
+    # stateless orchestrator can resume where it left off. Absent/None for an
+    # ordinary single-product CHOOSE.
+    pending_items: list[dict] | None = None
+    resolved_items: list[dict] | None = None
 
 
 class CampaignResolveRequest(BaseModel):
@@ -181,6 +187,8 @@ def _result_json(orch: Orchestrator, result, trace_id: str | None) -> dict:
         "amount_paise": result.amount_paise,
         "cart": result.cart,
         "upsell_suggestion": result.upsell_suggestion,
+        "pending_items": result.pending_items,
+        "resolved_items": result.resolved_items,
         "trace_id": trace_id,
         "llm_calls": orch.llm.calls,
     }
@@ -373,7 +381,11 @@ def select_stream(session_id: str, req: SelectRequest, authorization: str | None
     return _sse_response(
         session_id,
         "select",
-        lambda orch, on: orch.select(session_id, req.item_id, on_stage=on),
+        lambda orch, on: orch.select(
+            session_id, req.item_id,
+            pending_items=req.pending_items, resolved_items=req.resolved_items,
+            on_stage=on,
+        ),
         record=lambda rj: _after_step(session_id, req.run_id, req.goal, rj),
     )
 
@@ -436,7 +448,10 @@ def select_option(session_id: str, req: SelectRequest, authorization: str | None
         with tracer.start_as_current_span("select") as span:
             span.set_attribute("session_id", session_id)
             span.set_attribute("item_id", req.item_id)
-            result = orch.select(session_id, req.item_id)
+            result = orch.select(
+                session_id, req.item_id,
+                pending_items=req.pending_items, resolved_items=req.resolved_items,
+            )
             trace_id = format(span.get_span_context().trace_id, "032x")
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

@@ -95,6 +95,12 @@ export interface OrchestratorResult {
   cart?: CartView | null;
   amount_paise?: number;
   upsell_suggestion?: UpsellSuggestion | null;
+  // Present only for a CHOOSE mid-way through a multi-product goal ("buy
+  // running shoes and a phone case") — echo both straight back on the next
+  // POST /sessions/{id}/select so the stateless orchestrator resumes where
+  // it left off, instead of treating the pick as its own separate purchase.
+  pending_items?: Record<string, unknown>[] | null;
+  resolved_items?: Record<string, unknown>[] | null;
 }
 
 /** An in-app campaign nudge (GET /sessions/{id}/campaign). The engine only ever

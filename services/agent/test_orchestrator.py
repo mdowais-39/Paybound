@@ -435,3 +435,153 @@ def test_low_confidence_routes_to_needs_human_citing_the_scorer():
     assert result.state == "NEEDS_HUMAN"
     assert result.rule_cited == "low_confidence"
     assert "checkout" not in mcp.calls  # never reached the gate
+
+
+# --- Multi-product goals: "buy running shoes and a phone case" -------------
+
+CASE = {"item_id": "55555555-5555-5555-5555-555555555555", "merchant_id": "m",
+        "title": "Phone Case", "category": "accessories", "price_paise": 50000}
+
+
+def test_multi_item_goal_with_unambiguous_matches_composes_one_cart():
+    """Two products, each with exactly one real match — no human input
+    needed for either, so both auto-resolve into ONE cart in a single call."""
+    mcp = FakeMcp(
+        {"verdict": "approved", "payment_link": "https://rzp.io/multi"},
+        search_items=[{"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+                       "title": "Trail Runner", "category": "footwear", "price_paise": 285000}],
+        complement_items={"phone case": [CASE]},
+    )
+    m = {**mandate(), "allowed_categories": [], "budget_total_paise": 1000000, "per_txn_cap_paise": 1000000}
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
+    items = [
+        Intent(query="running shoes", category="footwear"),
+        Intent(query="phone case", category="accessories"),
+    ]
+
+    result = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
+
+    assert result.state == "AUTHORIZED"
+    assert len(result.cart["line_items"]) == 2
+    assert {li["item_id"] for li in result.cart["line_items"]} == {
+        "11111111-1111-1111-1111-111111111111", CASE["item_id"],
+    }
+    assert result.amount_paise == 285000 + CASE["price_paise"]
+    # No confidence gate, no upsell offer — an explicit per-item resolution
+    # (auto-match or human pick) is already a stronger signal than either.
+    assert "checkout" in mcp.calls
+
+
+def test_multi_item_goal_pauses_at_choose_for_the_ambiguous_item():
+    """The first product auto-resolves; the second has 3 plausible matches —
+    the WHOLE request pauses at CHOOSE for that one product, carrying the
+    already-resolved first product forward instead of losing it."""
+    mcp = FakeMcp(
+        {"verdict": "approved"},
+        search_items=[CASE],
+        complement_items={"running shoes": MULTI},
+    )
+    m = {**mandate(), "allowed_categories": []}
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
+    items = [Intent(query="phone case", category="accessories"), Intent(query="running shoes", category="footwear")]
+
+    result = orch.run("s1", "buy a phone case and running shoes", parsed_intent=items)
+
+    assert result.state == "CHOOSE"
+    assert result.message.startswith("Item 2 of 2:")
+    assert result.options is not None and len(result.options) == 3
+    assert result.pending_items is None  # nothing left after this one
+    assert result.resolved_items == [
+        {"item_id": CASE["item_id"], "title": CASE["title"], "category": CASE["category"],
+         "price_paise": CASE["price_paise"], "merchant_id": CASE["merchant_id"]}
+    ]
+    assert "create_cart" not in mcp.calls
+
+
+def test_select_continues_a_multi_item_goal_into_one_cart():
+    """Resuming the CHOOSE above with a pick: the previously-resolved item
+    (echoed back via resolved_items) and the just-picked one land in ONE
+    cart together, not two separate purchases."""
+    mcp = FakeMcp(
+        {"verdict": "approved", "payment_link": "https://rzp.io/multi2"},
+        search_items=[CASE, *MULTI],
+    )
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(mandate()))
+    resolved_items = [
+        {"item_id": CASE["item_id"], "title": CASE["title"], "category": CASE["category"],
+         "price_paise": CASE["price_paise"], "merchant_id": CASE["merchant_id"]}
+    ]
+
+    result = orch.select("s1", MULTI[1]["item_id"], resolved_items=resolved_items)
+
+    assert result.state == "AUTHORIZED"
+    assert len(result.cart["line_items"]) == 2
+    assert {li["item_id"] for li in result.cart["line_items"]} == {CASE["item_id"], MULTI[1]["item_id"]}
+
+
+def test_multi_item_no_match_aborts_the_whole_request_cleanly():
+    """One product genuinely has no match — the request aborts entirely,
+    never a cart with only some of what was asked for."""
+    mcp = FakeMcp({"verdict": "approved"}, search_items=[CASE], complement_items={"unicorn": []})
+    m = {**mandate(), "allowed_categories": []}
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
+    items = [Intent(query="phone case"), Intent(query="unicorn")]
+
+    result = orch.run("s1", "buy a phone case and a unicorn", parsed_intent=items)
+
+    assert result.state == "CLARIFY"
+    assert "Nothing was added to your cart" in result.message
+    assert "create_cart" not in mcp.calls
+
+
+def test_parse_splits_a_multi_product_goal_into_separate_items():
+    """The real parse path (no injected Intent list) — a scripted LLM
+    response with an `items` array drives the same multi-product flow."""
+    mcp = FakeMcp(
+        {"verdict": "approved"},
+        search_items=[{"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+                       "title": "Trail Runner", "category": "footwear", "price_paise": 285000}],
+        complement_items={"phone case": [CASE]},
+    )
+    m = {**mandate(), "allowed_categories": []}
+    llm = FakeLLM({
+        "items": [
+            {"query": "running shoes", "max_price_paise": None, "category": "footwear"},
+            {"query": "phone case", "max_price_paise": None, "category": "accessories"},
+        ],
+        "ambiguous": False,
+    })
+    orch = Orchestrator(mcp, llm, FakeDb(m))
+
+    result = orch.run("s1", "buy running shoes and a phone case")
+
+    assert result.state == "AUTHORIZED"
+    assert len(result.cart["line_items"]) == 2
+    assert llm.calls == 1
+
+
+def test_multi_item_second_choose_is_scoped_to_the_first_items_merchant():
+    """The real bug this guards: two products from DIFFERENT merchants must
+    never both reach create_cart (single-merchant carts) — caught as a clean
+    explained refusal at the SECOND item's search, before any CHOOSE is even
+    offered for an incompatible option, not as a raw create_cart error after
+    the human has already picked."""
+    other_merchant_case = {**CASE, "merchant_id": "other-merchant"}
+    mcp = FakeMcp(
+        {"verdict": "approved"},
+        search_items=[{"item_id": "11111111-1111-1111-1111-111111111111", "merchant_id": "m",
+                       "title": "Trail Runner", "category": "footwear", "price_paise": 285000}],
+        complement_items={"phone case": [other_merchant_case]},
+    )
+    m = {**mandate(), "allowed_categories": []}
+    orch = Orchestrator(mcp, FakeLLM({}), FakeDb(m))
+    items = [
+        Intent(query="running shoes", category="footwear"),
+        Intent(query="phone case", category="accessories"),
+    ]
+
+    result = orch.run("s1", "buy running shoes and a phone case", parsed_intent=items)
+
+    assert result.state == "CLARIFY"
+    assert "different seller" in result.message
+    assert "create_cart" not in mcp.calls

@@ -364,6 +364,13 @@ export const ShopPage: React.FC = () => {
     setLoading(true);
     const cartId = selectedCart.id;
     const goal = selectedCart.goal;
+    // A multi-product goal ("buy running shoes and a phone case") pauses at
+    // CHOOSE carrying pending/resolved items — echo them straight back so
+    // this pick continues the SAME multi-product exchange (into one cart)
+    // instead of the backend treating it as a lone purchase. Undefined for
+    // an ordinary single-product CHOOSE.
+    const pendingItems = selectedCart.result?.pending_items ?? undefined;
+    const resolvedItems = selectedCart.result?.resolved_items ?? undefined;
     patchCart(cartId, { stages: PENDING_STAGES, isComplete: false, title: "Composing selection…" });
     try {
       const result = await selectOptionStream(
@@ -372,6 +379,8 @@ export const ShopPage: React.FC = () => {
         (evt) => applyStageEvent(cartId, evt.id, evt.status),
         cartId,
         goal,
+        pendingItems,
+        resolvedItems,
       );
       applyResult(cartId, goal, result);
       await refreshMandates();

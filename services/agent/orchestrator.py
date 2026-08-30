@@ -42,21 +42,68 @@ def _stage_emitter(on_stage: StageCallback | None) -> StageCallback:
         return lambda _id, _status: None
     return on_stage
 
+
+# Round-trip helpers for the multi-product CHOOSE pause: the orchestrator is
+# stateless between HTTP calls, so a still-pending product (Intent) or an
+# already-resolved one (Candidate) has to travel to the client and back as a
+# plain dict via OrchestratorResult.pending_items/resolved_items.
+def _intent_to_dict(intent: Intent) -> dict:
+    return {
+        "query": intent.query,
+        "max_price_paise": intent.max_price_paise,
+        "category": intent.category,
+    }
+
+
+def _intent_from_dict(d: dict) -> Intent:
+    return Intent(query=d["query"], max_price_paise=d.get("max_price_paise"), category=d.get("category"))
+
+
+def _candidate_to_dict(c: Candidate) -> dict:
+    return {
+        "item_id": c.item_id,
+        "title": c.title,
+        "category": c.category,
+        "price_paise": c.price_paise,
+        "merchant_id": c.merchant_id,
+    }
+
+
+def _candidate_from_dict(d: dict) -> Candidate:
+    return Candidate(
+        item_id=d["item_id"],
+        title=d["title"],
+        category=d["category"],
+        price_paise=d["price_paise"],
+        merchant_id=d.get("merchant_id"),
+    )
+
 _PARSE_SYSTEM = """You parse a shopping request into JSON for a bounded buying agent.
 Return ONLY a JSON object with these fields:
-  query: string — concise product search terms
-  max_price_paise: integer or null — price ceiling in paise (rupees*100) if stated
-  category: string or null — a product category if clear
-  ambiguous: boolean — true if the request is too vague to shop (e.g. "something nice")
-  clarification_question: string or null — if ambiguous, a specific follow-up question
-Only mark ambiguous when you genuinely cannot pick search terms. Prices in the
-request are in rupees; multiply by 100 for paise.
-IMPORTANT: max_price_paise must reflect ONLY a price limit the Request text itself
-states (e.g. "under 3000", "below ₹500"). The context also lists the account's
-overall allowed categories and total budget — those are separate, account-level
-limits enforced elsewhere; never copy the budget figure into max_price_paise, and
-leave it null whenever the request names a specific item without stating its own
-price limit."""
+  items: an array of 1 or more objects, one per DISTINCT product the request
+    names — each object:
+      query: string — concise product search terms for that ONE product
+      max_price_paise: integer or null — price ceiling in paise (rupees*100)
+        stated for that product, if any
+      category: string or null — a product category if clear
+  ambiguous: boolean — true if the request AS A WHOLE is too vague to shop
+    (e.g. "something nice"), even after trying to split it into items
+  clarification_question: string or null — if ambiguous, a specific follow-up
+    question
+Only mark ambiguous when you genuinely cannot pick search terms for ANY product
+named. Split into multiple `items` ONLY when the request names genuinely
+distinct products — "buy running shoes and a phone case" is 2 items; "a grey
+leather sofa" is 1 item (multiple adjectives describing ONE product, not
+multiple products). Prices in the request are in rupees; multiply by 100 for
+paise.
+IMPORTANT: an item's max_price_paise must reflect ONLY a price limit the
+Request text itself states for THAT product (e.g. "shoes under 3000" -> that
+item's max_price_paise=300000; a limit stated once but clearly meant per-item,
+e.g. "two things under 1000 each", applies to each). The context also lists
+the account's overall allowed categories and total budget — those are
+separate, account-level limits enforced elsewhere; never copy the budget
+figure into any item's max_price_paise, and leave it null whenever an item
+names a specific product without stating its own price limit."""
 
 
 class Orchestrator(BaseAgent):
@@ -95,7 +142,7 @@ class Orchestrator(BaseAgent):
         self,
         session_id: str,
         goal: str,
-        parsed_intent: Intent | None = None,
+        parsed_intent: Intent | list[Intent] | None = None,
         on_stage: StageCallback | None = None,
     ) -> OrchestratorResult:
         # `emit` streams genuine pipeline-stage events to the caller (the SSE
@@ -117,55 +164,138 @@ class Orchestrator(BaseAgent):
             )
         emit("pre_checks", "success")
 
-        # 2. Parse the goal (the first LLM call). Tests may inject the intent.
+        # 2. Parse the goal (the first LLM call) into one Intent per DISTINCT
+        # product named — "buy running shoes and a phone case" parses to 2.
+        # Tests may inject either a single Intent (the common case) or a list.
         emit("parsing", "active")
-        intent = parsed_intent if parsed_intent is not None else self._parse_intent(goal, mandate)
+        if parsed_intent is not None:
+            items = parsed_intent if isinstance(parsed_intent, list) else [parsed_intent]
+        else:
+            items = self._parse_items(goal, mandate)
         emit("parsing", "success")
 
-        # 3. Ambiguous → ask, don't guess.
-        if intent.ambiguous:
-            question = self.clarification.ask(intent)
+        # 3. Ambiguous → ask, don't guess. `_parse_items` collapses a
+        # whole-request ambiguity down to a single ambiguous Intent, so this
+        # check is unchanged from the single-product path.
+        if len(items) == 1 and items[0].ambiguous:
+            question = self.clarification.ask(items[0])
             return OrchestratorResult(state="CLARIFY", message=question, clarification_question=question)
 
-        # 4. Shop — bounded to the mandate's allowed category + merchant.
+        # 4-6. Resolve each product in order — auto-continuing past any
+        # unambiguous match, pausing at the first one that needs a human pick
+        # (or fails outright), and gating the assembled cart once every
+        # product is resolved.
+        return self._resolve_items(session_id, items, mandate, on_stage=on_stage)
+
+    def _resolve_items(
+        self,
+        session_id: str,
+        items: list[Intent],
+        mandate: dict,
+        resolved: list[Candidate] | None = None,
+        on_stage: StageCallback | None = None,
+    ) -> OrchestratorResult:
+        """Resolve `items` (still-pending products) one at a time, bounded to
+        the mandate's allowed category/merchant, accumulating onto `resolved`
+        (products from this same multi-product goal already resolved). Used
+        both by `run()` (resolved=[]) and by `select()`'s continuation after a
+        human picks one of several options for a mid-list product.
+
+        Auto-continues past any product with exactly one match — the agent
+        still never guesses among several candidates, it just doesn't need a
+        human's help when there's only one real answer. The first product
+        that's genuinely ambiguous pauses the WHOLE request at CHOOSE (not
+        just that product) via `pending_items`/`resolved_items`, so nothing
+        already resolved is lost. A product with NO match aborts the whole
+        request cleanly — never a cart with only some of what was asked for.
+
+        A cart is single-merchant (the storefront's own `create_cart`
+        constraint, mirroring the kernel's `check_merchant`), so once one
+        product resolves, every later product's search is scoped to THAT
+        merchant only (same precedent as `find_upsell`'s single-merchant
+        filter) — catching an incompatible pick as a clean explained refusal
+        *before* a cart is ever built, instead of a raw tool error surfacing
+        once every product is already resolved."""
+        emit = _stage_emitter(on_stage)
+        resolved = list(resolved or [])
+        remaining = list(items)
         emit("searching", "active")
-        outcome = self.discovery.search(
-            intent,
-            allowed_categories=mandate.get("allowed_categories"),
-            allowed_merchants=mandate.get("allowed_merchants"),
-        )
-        candidates = outcome.candidates
-        if not candidates:
-            emit("searching", "success")
-            q = self._no_match_message(intent, outcome, mandate)
-            return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
+        while remaining:
+            intent = remaining[0]
+            already_merchants = {c.merchant_id for c in resolved if c.merchant_id}
+            merchant_scope = list(already_merchants) if already_merchants else mandate.get("allowed_merchants")
+            outcome = self.discovery.search(
+                intent,
+                allowed_categories=mandate.get("allowed_categories"),
+                allowed_merchants=merchant_scope,
+            )
+            candidates = outcome.candidates
+            if not candidates:
+                emit("searching", "success")
+                if already_merchants and outcome.reason == "merchant":
+                    q = (
+                        f'I found matches for "{intent.query}", but only from a '
+                        f"different seller than the other item(s) in this order — "
+                        f"a single order can only include products from one "
+                        f"seller. Nothing was added to your cart; try that item "
+                        f"on its own, or ask for one from the same seller."
+                    )
+                else:
+                    q = self._no_match_message(intent, outcome, mandate)
+                    if resolved:
+                        q = (
+                            f"{q} Nothing was added to your cart — the other item(s) "
+                            f"in this request weren't purchased either."
+                        )
+                return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
+
+            if len(candidates) > 1:
+                # More than one plausible match for THIS product → the agent
+                # does not get to guess which brand/price/style the human
+                # wants. Offer them, don't silently buy the top-ranked one —
+                # same principle as the single-product path, just paused
+                # mid-list instead of at the start.
+                emit("searching", "success")
+                options = candidates[:MAX_OPTIONS]
+                total = len(resolved) + len(remaining)
+                prefix = f"Item {len(resolved) + 1} of {total}: " if total > 1 else ""
+                return OrchestratorResult(
+                    state="CHOOSE",
+                    message=f'{prefix}I found {len(options)} options for "{intent.query}" — which would you like?',
+                    options=[
+                        {
+                            "item_id": c.item_id,
+                            "title": c.title,
+                            "category": c.category,
+                            "price_paise": c.price_paise,
+                            "merchant_id": c.merchant_id,
+                        }
+                        for c in options
+                    ],
+                    pending_items=[_intent_to_dict(i) for i in remaining[1:]] or None,
+                    resolved_items=[_candidate_to_dict(c) for c in resolved] or None,
+                )
+
+            # Exactly one match for this product — no ambiguity, nothing for
+            # a human to decide, so it auto-resolves and the loop moves on to
+            # the next product (if any).
+            resolved.append(candidates[0])
+            remaining = remaining[1:]
         emit("searching", "success")
 
-        # 5. More than one plausible match → the agent does not get to guess
-        # which brand/price/style the human actually wants. Offer them, don't
-        # silently buy the top-ranked one.
-        if len(candidates) > 1:
-            options = candidates[:MAX_OPTIONS]
-            return OrchestratorResult(
-                state="CHOOSE",
-                message=f"I found {len(options)} options — which would you like?",
-                options=[
-                    {
-                        "item_id": c.item_id,
-                        "title": c.title,
-                        "category": c.category,
-                        "price_paise": c.price_paise,
-                        "merchant_id": c.merchant_id,
-                    }
-                    for c in options
-                ],
-            )
-
-        # 6. Exactly one match — compose and gate it.
-        return self._compose_and_checkout(session_id, candidates[0], intent, mandate, on_stage=on_stage)
+        if len(resolved) == 1:
+            # The single-product path — identical to the pre-multi-product
+            # behavior (confidence gate + upsell both still apply).
+            return self._compose_and_checkout(session_id, resolved[0], items[0], mandate, on_stage=on_stage)
+        return self._compose_and_checkout_many(session_id, resolved, on_stage=on_stage)
 
     def select(
-        self, session_id: str, item_id: str, on_stage: StageCallback | None = None
+        self,
+        session_id: str,
+        item_id: str,
+        pending_items: list[dict] | None = None,
+        resolved_items: list[dict] | None = None,
+        on_stage: StageCallback | None = None,
     ) -> OrchestratorResult:
         """Resume a CHOOSE session after the human picked a specific item
         (POST /sessions/{id}/select). Re-validates the item against the
@@ -174,7 +304,15 @@ class Orchestrator(BaseAgent):
         re-checks price/budget/cap at checkout either way, but this catches a
         mismatched pick before ever building a cart. No LLM call: a human
         explicitly naming the exact item is a stronger signal than any
-        confidence score, so it skips that gate too."""
+        confidence score, so it skips that gate too.
+
+        `pending_items`/`resolved_items` are only present for a MULTI-product
+        goal — the exact values this same CHOOSE result handed the client,
+        echoed straight back (the orchestrator has no memory of its own
+        between HTTP calls). When `pending_items` still has entries, this
+        pick just resolves ONE of several products and the flow continues to
+        the next one instead of checking out; when it's the last product,
+        every resolved item composes into ONE cart together."""
         emit = _stage_emitter(on_stage)
         # The human already did the searching/choosing, so those stages are
         # done the moment we resume.
@@ -207,6 +345,18 @@ class Orchestrator(BaseAgent):
             price_paise=item["price_paise"],
             merchant_id=item["merchant_id"],
         )
+
+        if pending_items:
+            remaining = [_intent_from_dict(d) for d in pending_items]
+            resolved = [_candidate_from_dict(d) for d in (resolved_items or [])] + [candidate]
+            return self._resolve_items(session_id, remaining, mandate, resolved=resolved, on_stage=on_stage)
+        if resolved_items:
+            # The last product of a multi-product goal — everything resolved
+            # across this whole exchange goes into one cart together.
+            resolved = [_candidate_from_dict(d) for d in resolved_items] + [candidate]
+            return self._compose_and_checkout_many(session_id, resolved, on_stage=on_stage)
+
+        # The ordinary single-product path — unchanged.
         intent = Intent(query=item["title"], category=item["category"])
         return self._compose_and_checkout(
             session_id, candidate, intent, mandate, skip_confidence_gate=True, on_stage=on_stage
@@ -287,6 +437,47 @@ class Orchestrator(BaseAgent):
                 )
 
         # Gate: the orchestrator (only) submits the cart to the kernel.
+        result = self._checkout(session_id, cart.cart_id, afa_approved=False, on_stage=on_stage)
+        result.amount_paise = cart.total_paise
+        result.cart = cart_view
+        return result
+
+    def _compose_and_checkout_many(
+        self, session_id: str, items: list[Candidate], on_stage: StageCallback | None = None
+    ) -> OrchestratorResult:
+        """Compose + gate a cart from MULTIPLE independently-resolved products
+        (the multi-product path — see `_resolve_items`). No confidence gate
+        and no upsell offer here: every item already passed discovery on its
+        own (auto-resolved on an unambiguous match, or explicitly human-picked
+        via CHOOSE), which is already a stronger signal than a heuristic
+        confidence score — the same reasoning `select()` already uses via
+        `skip_confidence_gate` for a single explicit pick. Offering an upsell
+        would also mean guessing which ONE of several items to pair it with.
+
+        `_resolve_items` already scopes every search to the merchant of
+        whatever's resolved so far, so this shouldn't normally see a mismatch
+        — but a human can round-trip stale CHOOSE options from before a
+        backend change, so this re-checks before ever calling `create_cart`,
+        turning what would otherwise be a raw tool error into the same clean
+        explained refusal `_resolve_items` gives when it catches this itself."""
+        emit = _stage_emitter(on_stage)
+        merchants = {c.merchant_id for c in items if c.merchant_id}
+        if len(merchants) > 1:
+            names = ", ".join(f'"{c.title}"' for c in items)
+            q = (
+                f"{names} are from different sellers — a single order can only "
+                f"include products from one seller. Nothing was added to your "
+                f"cart; ask for them one at a time instead."
+            )
+            return OrchestratorResult(state="CLARIFY", message=q, clarification_question=q)
+        emit("composing", "active")
+        cart = self.cart_composer.compose_many(session_id, items)
+        emit("composing", "success")
+        cart_view = {
+            "cart_id": cart.cart_id,
+            "total_paise": cart.total_paise,
+            "line_items": cart.display_items,
+        }
         result = self._checkout(session_id, cart.cart_id, afa_approved=False, on_stage=on_stage)
         result.amount_paise = cart.total_paise
         result.cart = cart_view
@@ -457,24 +648,50 @@ class Orchestrator(BaseAgent):
             f"Try a different product or a broader term."
         )
 
-    def _parse_intent(self, goal: str, mandate: dict) -> Intent:
+    def _parse_items(self, goal: str, mandate: dict) -> list[Intent]:
+        """Parse the goal into one Intent per DISTINCT product named. A
+        whole-request ambiguity collapses to a single ambiguous Intent
+        (ignoring whatever items the LLM may have guessed at) so `run()`'s
+        existing single-Intent CLARIFY check keeps working unchanged."""
         cats = mandate.get("allowed_categories") or []
         user = f"Allowed categories: {cats}. Budget (paise): {mandate.get('budget_total_paise')}.\nRequest: {goal}"
         try:
             data = self.llm.complete_json(_PARSE_SYSTEM, user)
         except Exception as e:  # noqa: BLE001
             # Graceful degradation: if the LLM is unavailable (outage / rate
-            # limit), fall back to a deterministic parse. The kernel and the
-            # mandate bounds still gate everything, so this stays safe.
+            # limit), fall back to a deterministic single-product parse. The
+            # kernel and the mandate bounds still gate everything, so this
+            # stays safe — it just can't split a multi-product goal.
             logger.warning("llm_parse_failed_using_heuristic", extra={"error": str(e)})
-            return self._heuristic_intent(goal)
-        return Intent(
-            query=str(data.get("query") or goal),
-            max_price_paise=data.get("max_price_paise"),
-            category=data.get("category"),
-            ambiguous=bool(data.get("ambiguous", False)),
-            clarification_question=data.get("clarification_question"),
-        )
+            return [self._heuristic_intent(goal)]
+
+        if bool(data.get("ambiguous", False)):
+            return [
+                Intent(
+                    query=goal,
+                    ambiguous=True,
+                    clarification_question=data.get("clarification_question"),
+                )
+            ]
+        raw_items = data.get("items") or []
+        if not raw_items:
+            # Malformed/empty response — ask rather than silently doing
+            # nothing with an unparseable goal.
+            return [
+                Intent(
+                    query=goal,
+                    ambiguous=True,
+                    clarification_question="Could you say more specifically what you'd like to buy?",
+                )
+            ]
+        return [
+            Intent(
+                query=str(it.get("query") or goal),
+                max_price_paise=it.get("max_price_paise"),
+                category=it.get("category"),
+            )
+            for it in raw_items
+        ]
 
     @staticmethod
     def _heuristic_intent(goal: str) -> Intent:
