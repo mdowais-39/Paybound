@@ -1,461 +1,490 @@
-<div align="center">
+<p align="center">
+  <img alt="Paybound" src="docs/assets/paybound-logo.png" width="460">
+</p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/paybound-logo-dark.svg">
-  <img src="docs/assets/paybound-logo.svg" alt="Paybound" width="400">
-</picture>
+<h1 align="center">Paybound — Bounded Authority for AI Commerce</h1>
 
-### The trust layer that lets an AI agent shop on your behalf — on Razorpay's rails — safely, boundedly, and provably.
+<p align="center">
+  <b>Let an AI agent shop and pay on a customer's behalf — without it ever being able to overspend, buy off-mandate, or move money on its own.</b><br>
+  A signed spending <i>mandate</i>, a deterministic Rust kernel that gates every purchase before a rupee moves, and a hash-chained audit ledger that proves exactly why each one did.
+</p>
 
-Every purchase this system makes is contained inside a cryptographically signed budget, category, and time limit **— before a rupee moves.**
+<p align="center">
+  Built for the <b>Razorpay AI Buildathon — Track 1 (AI Growth &amp; Agentic Commerce)</b>.<br>
+  The product is the <i>governance layer</i>, not the shopping bot. <b>The agent proposes; the kernel disposes.</b>
+</p>
 
-<br/>
-
-[![Track](https://img.shields.io/badge/Razorpay%20AI%20Buildathon-Track%201-6d28d9?style=flat-square)](#)
-[![Rust](https://img.shields.io/badge/Rust-60%20tests%20passing-c2410c?style=flat-square&logo=rust)](#testing)
-[![Python](https://img.shields.io/badge/Python-69%20tests%20passing-1d4ed8?style=flat-square&logo=python&logoColor=white)](#testing)
-[![Bounds](https://img.shields.io/badge/adversarial%20bounds-10%2F10%20hold-15803d?style=flat-square)](docs/BOUNDS_HOLD.md)
-[![Payments](https://img.shields.io/badge/Razorpay-real%20test--mode-072654?style=flat-square)](#real-vs-simulated)
-
-**The agent proposes. The kernel disposes.**
-
-</div>
-
----
-
-## Table of contents
-
-- [The one-paragraph version](#the-one-paragraph-version)
-- [Why this, why now](#why-this-why-now)
-- [Architecture — top to bottom](#architecture--top-to-bottom)
-- [Screenshots](#screenshots)
-- [Features](#features)
-- [Edge cases &amp; graceful failure](#edge-cases--graceful-failure)
-- [Tech stack](#tech-stack)
-- [Repo layout](#repo-layout)
-- [Setup](#setup)
-- [Running the demos](#running-the-demos)
-- [Testing](#testing)
-- [Real vs. simulated](#real-vs-simulated)
-- [Documentation](#documentation)
+<p align="center">
+  <img alt="Rust" src="https://img.shields.io/badge/trust%20core-Rust%20%2F%20Axum-DEA584?logo=rust&logoColor=black">
+  <img alt="Python" src="https://img.shields.io/badge/AI%20layer-Python%20%2F%20FastAPI%20%2F%20LangGraph-3776AB?logo=python&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/frontend-React%20%2F%20TypeScript%20%2F%20Vite-61DAFB?logo=react&logoColor=black">
+  <img alt="Postgres" src="https://img.shields.io/badge/database-PostgreSQL%2016%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white">
+  <img alt="Razorpay" src="https://img.shields.io/badge/payments-Razorpay%20test%20mode-0C2451?logo=razorpay&logoColor=white">
+  <img alt="Status" src="https://img.shields.io/badge/status-hackathon%20build-orange">
+</p>
 
 ---
 
-## The one-paragraph version
+## Table of Contents
 
-A shopping agent (Python) reads a natural-language goal — *"buy running shoes
-under ₹3,000"* — searches a real 2,950-item catalog through an **MCP
-storefront** (Rust), and proposes a cart. **It can never pay directly.** Every
-proposed cart is submitted to a **Mandate & Consent Kernel** (Rust): a pure,
-zero-I/O, exhaustively-tested function that checks a cryptographically signed
-Intent Mandate's bounds — per-transaction cap, cumulative budget,
-category/merchant allow-list, time-to-live, cart integrity — and returns either
-an approval or a **typed refusal**. Only an approved authorization reaches the
-**Execution Plane**, which makes a real Razorpay test-mode payment,
-idempotently. Every step is appended to a **SHA-256 hash-chained audit ledger**
-— carrying the real product name, category, and price — and narrated in plain
-language. A human can **revoke** authority at any instant; the agent's very
-next attempt is blocked.
+1. [Overview](#overview)
+2. [Key Features](#key-features)
+3. [Architecture](#architecture)
+4. [Tech Stack](#tech-stack)
+5. [Repository Structure](#repository-structure)
+6. [Prerequisites](#prerequisites)
+7. [Setup & Installation](#setup--installation)
+8. [Running the Project](#running-the-project)
+9. [Docker Setup & Execution](#docker-setup--execution)
+10. [Environment Variables Reference](#environment-variables-reference)
+11. [API Access](#api-access)
+12. [What's Real vs. Simulated](#whats-real-vs-simulated)
+13. [Further Reading](#further-reading)
+14. [Testing](#testing)
+15. [Troubleshooting](#troubleshooting)
 
-This is not a shopping chatbot with a mock "buy" button. It is a working
-implementation of the trust layer that Indian commentators and Razorpay's own
-product boundaries say doesn't exist yet in any self-serve product —
-agent-specific spend caps, per-merchant limits, instant revocation, a
-cryptographic authority chain — built end-to-end on **real Razorpay test-mode
-APIs**.
+---
 
-## Why this, why now
+## Overview
 
-Razorpay has already shipped an MCP server and a closed Claude + NPCI pilot
-letting an AI agent complete UPI purchases. The direction is set — but both are
-**closed-pilot only, with no public self-serve API**. Commentators (Medianama,
-NPCI) are still *proposing* the baseline safeguards this build actually
-implements. Citibank's Prag Sharma, at the Feb 2026 India AI Impact Summit,
-framed the gap as agents needing "an Aadhaar equivalent, a UPI equivalent, and
-an ONDC equivalent" — and said none of the three exist yet.
+**Paybound** is a trust-and-authorization layer that makes a merchant safely transactable by an *AI buyer*, on real Razorpay test-mode rails. A customer signs a bounded **Intent Mandate** — a total budget, a per-purchase cap, allowed categories/merchants, and an expiry. An AI shopping agent then works within that mandate, but it has **no tool that spends money**: its only path to a purchase is to submit a proposed cart to a deterministic **Rust kernel**, which gates it against the signed mandate before anything moves. Only a server-side execution plane — never the agent — can create the actual Razorpay payment, and every action is written to a **hash-chained, tamper-evident audit ledger** with a plain-English narration.
 
-**Paybound implements that missing loop in test mode, in the open — with the
-real ₹15,000 RBI AFA threshold as the human-approval gate, not an invented
-number.**
+The whole system is built around one invariant: **the agent proposes; the kernel disposes.**
 
-## Architecture — top to bottom
+Concretely, Paybound gives you:
 
-Colour = which stack owns the node. **Peach = Rust** (the deterministic money
-path). **Blue = Python** (agentic reasoning + ML). **Purple = React frontend.**
-**Red = the kernel gate itself** — the crown jewel. **Green = PostgreSQL. Teal
-= Temporal. Light-blue = Razorpay.**
+- **A signed, bounded mandate** — ed25519-signed authority (budget, per-txn cap, categories, merchants, TTL) that the agent cannot forge or exceed.
+- **A pure deterministic gate** — the **Mandate & Consent Kernel** (Rust, zero-I/O, exhaustively tested) enforces **nine bounds** in a fixed order and returns either an authorization or a *typed* refusal. No LLM ever decides whether money moves.
+- **A real AI buyer** — a LangGraph pipeline (deterministic pre-checks → orchestrator → discovery / cart-composer / clarification workers) backed by **three trained ML models** (relevance ranking, upsell, and a purchase-confidence scorer), talking to the merchant through a real **MCP storefront** (five tools, agent-discovery surface).
+- **Real payments** — genuine Razorpay **test-mode payment links** (`plink_*`, `rzp.io/...`), HMAC-verified webhooks, and idempotent money calls.
+- **Graceful refusal & instant revocation as first-class states** — a refusal is a typed, explained decision (not a crash); a human can revoke a mandate mid-session and the very next agent action is blocked.
+- **Durable human-in-the-loop** — purchases over **₹15,000** (the RBI additional-factor-authentication threshold) pause at `NEEDS_HUMAN` on a **Temporal** workflow that survives a worker crash and resumes on approval.
+- **Proof, not vibes** — a SHA-256 hash-chained audit ledger with `verify_chain`, plus an LLM **narrator** that describes each decision in plain English (it describes, it never decides).
 
-```mermaid
-flowchart TD
-    subgraph CLIENT["👤 Client &amp; Human Layer — React + TypeScript + Vite · :5173"]
-        Human(["🧑 Human Buyer"])
-        MandateUI["<b>Consent &amp; Mandate Console</b><br/><i>grant budget · category · TTL · REVOKE</i>"]
-        ShopUI["<b>Conversational Shop Console</b><br/><i>NL goal · CHOOSE · UPSELL · live pipeline (SSE)</i>"]
-        AuditUI["<b>Audit Trail Viewer</b><br/><i>grouped-by-cart · hash-verified · product detail</i>"]
-    end
-    Human -->|"grant / revoke authority"| MandateUI
-    Human -->|"'buy running shoes under 3000'"| ShopUI
-    Human -->|"inspect every rupee"| AuditUI
+The frontend is a **governance console**, not a shopping cart: a place to *set authority*, *watch the agent act within it*, and *inspect exactly what happened and why*.
 
-    subgraph GATEWAY["🚪 Gateway — Rust · axum · :8080"]
-        Identity["<b>Identity</b><br/><i>bearer token</i>"]
-        MandateEP["<b>Mandate Lifecycle</b><br/><i>ed25519 sign · list · REVOKE</i>"]
-        AuditEP["<b>Audit Read API</b><br/><i>hash-verified chain</i>"]
-        WebhookEP["<b>Webhook Receiver</b><br/><i>HMAC-SHA256 · raw body</i>"]
-    end
-    MandateUI -->|"POST /identity · /mandates"| Identity
-    MandateUI -->|"POST /mandates/:id/revoke"| MandateEP
-    AuditUI -->|"GET /sessions/:id/audit"| AuditEP
+## Key Features
 
-    subgraph AGENT["🧠 Buyer Agent — Python · FastAPI · :8092"]
-        Precheck["<b>Deterministic Pre-checks</b><br/><i>valid? revoked? expired? · ZERO LLM calls</i>"]
-        Orchestrator["<b>Orchestrator</b><br/><i>owns the flow · the ONLY caller of checkout</i>"]
-        Workers["<b>Workers</b><br/><i>Discovery · Cart Composer · Clarification</i>"]
-        CampaignEng["<b>Campaign Engine</b><br/><i>win-back / complete-the-set · never touches money</i>"]
-    end
+| Category | What it does |
+|---|---|
+| **Intent Mandate** | Customer signs a bounded spending authority — total budget, per-transaction cap, allowed categories/merchants, TTL — ed25519-signed over canonical JSON; tampering fails verification |
+| **Mandate & Consent Kernel** | A pure, zero-I/O Rust function that gates every cart against the mandate. **Nine bounds**, checked in a fixed order, each independently tested; returns an authorization or a *typed* refusal |
+| **MCP Storefront** | The merchant exposed as an agent-shoppable surface: five MCP tools (`search_catalog`, `get_availability`, `get_variants`, `create_cart`, `checkout`) plus an agent-discovery layer (`agents.txt`, ARD manifest, schema.org JSON-LD, product feed) |
+| **Agentic buyer pipeline** | Deterministic pre-checks (prompt-injection defense, mandate/budget checks — **zero LLM tokens** spent if they fail) → Orchestrator (the *only* caller of `checkout`) → Discovery / Cart-Composer / Clarification workers |
+| **Three trained ML models** | Relevance ranker (Amazon **ESCI**), upsell model (**Instacart** + ESCI-C + Amazon Reviews 2023), and a gradient-boosted **Purchase Confidence Scorer** that routes low-confidence carts to human review — each degrades gracefully to a heuristic if its artifact is absent |
+| **Real Razorpay execution** | The execution plane turns a kernel authorization into a genuine test-mode **payment link**; HMAC-SHA256 webhook verification over the raw body; idempotency keys + single-use delegated tokens so nothing double-charges |
+| **Campaign & offers** | A merchant campaign engine surfaces contextual offers during a shopping session, resolved through the same mandate-bounded flow |
+| **Conversational checkout** | The agent asks a real follow-up when intent is ambiguous (never guesses), and lets the human refine an open request in place ("actually, under 2000") within the same run |
+| ⏸️ **Durable human approval** | Purchases over ₹15,000 pause at `NEEDS_HUMAN` on a Temporal workflow that survives a crash and resumes on approval — not an in-memory spinner |
+| **Hash-chained audit ledger** | Every event (session, pre-check, worker dispatch, confidence score, gate decision, payment, revocation, narrative) is SHA-256 chained and tamper-evident; `verify_chain` proves integrity |
+| **Plain-English narrator** | An LLM writes a one-sentence justification for each audit entry — it *describes* the already-made decision, it never re-opens it, and the narrative is never part of the hash chain |
+| **Observability** | OpenTelemetry traces across the money path, exported to Tempo/Grafana; W3C `traceparent` propagated agent → storefront |
 
-    subgraph ML["📦 Trained Models + LLM — loaded in-process, no network hop"]
-        Gemini["<b>Gemini LLM</b><br/><i>goal parse + audit narration · heuristic fallback</i>"]
-        Relevance["<b>Relevance Ranker</b><br/><i>XGBoost · Amazon ESCI · relevance-margin filter</i>"]
-        Upsell["<b>Upsell Model</b><br/><i>Instacart + ESCI-C + Reviews · MiniLM bridge</i>"]
-        Confidence["<b>Confidence Scorer</b><br/><i>gradient-boosted</i>"]
-    end
+## Architecture
 
-    ShopUI -->|"POST /sessions/:id/run"| Precheck
-    Precheck -->|"pass"| Orchestrator
-    Precheck -.->|"reject — typed reason, 0 LLM"| ShopUI
-    Orchestrator --> Workers
-    Orchestrator -->|"parse goal → 1..N intents"| Gemini
-    Workers -->|"rerank + relevance-filter"| Relevance
-    Workers -->|"complement · value-rank"| Upsell
-    Workers -->|"score purchase confidence"| Confidence
-    ShopUI -->|"GET /campaign"| CampaignEng
+```
+                        ┌───────────────────────────────────────────┐
+                        │  React / TypeScript / Vite frontend (5173) │
+                        │  Governance console: /mandate /shop /audit │
+                        └───────┬───────────────────────────┬────────┘
+                                │ REST + SSE                 │ REST
+                                ▼                            ▼
+              ┌──────────────────────────┐      ┌──────────────────────────────┐
+              │  Rust · Axum GATEWAY      │      │  Python · FastAPI AGENT API    │
+              │        (port 8080)        │      │        (port 8092)             │
+              │  identity · mandates ·    │      │  run / select / upsell /       │
+              │  sessions · audit chain · │      │  approve a goal (+ SSE stream) │
+              │  revoke · categories ·    │      │  campaign offers               │
+              │  Razorpay webhook         │      │  wraps the Orchestrator        │
+              └──────┬─────────────┬──────┘      └───────────────┬────────────────┘
+                     │             │                             │ MCP (JSON-RPC)
+                     │             │                             ▼
+                     │             │             ┌──────────────────────────────┐
+                     │             │             │  Rust · Axum STOREFRONT-MCP    │
+                     │             │             │        (port 8081)             │
+                     │             │             │  5 tools · discovery surface   │
+                     │             │             │  checkout ─► KERNEL (gate)     │
+                     │             │             │  authorized ─► EXECUTION ─► 💳  │
+                     │             │             └───────────────┬────────────────┘
+                     ▼             ▼                             ▼
+        ┌────────────────────────────────┐        ┌──────────────────────────────┐
+        │  PostgreSQL 16 + pgvector (5433)│        │  Razorpay TEST MODE (real API) │
+        │  mandates · sessions · carts ·  │        │  payment links · HMAC webhooks │
+        │  gate_decisions · reserve_blocks│        └──────────────────────────────┘
+        │  payment_effects · audit_ledger │
+        └────────────────────────────────┘   Redis (6379): idempotency keys + spend counters
+                                              Temporal (7233): durable NEEDS_HUMAN pause  [--profile workflow]
+                                              OTel→Tempo→Grafana (4317 / 3200 / 3000): traces
 
-    subgraph STORE["🏪 Merchant Storefront — MCP · Rust · axum · :8081"]
-        MCP["<b>MCP Tools · JSON-RPC 2.0</b><br/><i>search_catalog · get_availability · get_variants · create_cart · checkout</i>"]
-        Discovery2["<b>Agent Discovery Surface</b><br/><i>agents.txt · ARD manifest · schema.org JSON-LD · product feed</i>"]
-    end
-    Workers -->|"MCP tool calls (HTTP JSON-RPC)"| MCP
-    Orchestrator ==>|"checkout — the ONLY money call"| MCP
-    MCP -.->|"advertised to any external agent"| Discovery2
+  The trust core (Rust crates):
+    kernel  ── pure, zero-I/O gate (9 bounds)      reserve  ── Reserve-Pay ledger (cumulative cap)
+    ledger  ── hash-chained audit + repos          execution ── the ONLY caller of Razorpay
+    domain  ── shared types (Paise, state machine, mandate)   razorpay-client ── REST + HMAC verify
 
-    subgraph TRUST["🛡️ Trust Core — Rust · the crown jewel"]
-        Kernel{{"<b>Mandate &amp; Consent Kernel · HARD GATE</b><br/><i>pure fn · zero I/O · deterministic</i><br/>signature → TTL → cart integrity → category →<br/>merchant → per-txn cap → cumulative budget → AFA → revoked"}}
-        Signing["<b>ed25519 Verify</b><br/><i>signed Intent Mandate</i>"]
-        Reserve["<b>Reserve-Pay Ledger</b><br/><i>SIMULATED fund-block · block → multi-debit → revoke</i>"]
-    end
-    MCP ==>|"evaluate(cart, mandate, spend, now)"| Kernel
-    Kernel -->|"verify signature"| Signing
-    Kernel -->|"cumulative cap vs running spend"| Reserve
-    Kernel -.->|"Refused(reason) / NeedsHuman — typed"| Orchestrator
-
-    subgraph EXEC["💳 Execution Plane — Rust · ACP shared-token pattern"]
-        PayOrch["<b>Payment Orchestrator</b><br/><i>idempotent · ON CONFLICT claim</i>"]
-        Token["<b>Delegated Token Issuer</b><br/><i>scoped · single-use · 256-bit CSPRNG</i>"]
-    end
-    Kernel ==>|"Approved(Authorization)"| PayOrch
-    PayOrch --> Token
-
-    subgraph WF["⏱️ Durable Workflow — Temporal"]
-        Approval["<b>PurchaseApprovalWorkflow</b><br/><i>&gt; ₹15,000 AFA · survives crash/restart · exactly-once</i>"]
-    end
-    Kernel -->|"needs_human (&gt; ₹15k)"| Approval
-    Approval -->|"human approves"| PayOrch
-
-    Razorpay[("🔵 Razorpay — Test-Mode REST<br/><i>Payment Links · Orders · webhooks</i>")]
-    PayOrch -->|"create_payment_link"| Razorpay
-    Razorpay -->|"payment_link.paid"| WebhookEP
-    WebhookEP -->|"on_payment_paid → COMPLETED"| PayOrch
-
-    subgraph DATA["🗄️ Data Layer — PostgreSQL 16 + pgvector"]
-        PG[("<b>PostgreSQL</b><br/><i>catalog · intent/payment mandates · sessions · carts · runs · offers</i>")]
-        Audit[("<b>Hash-chained Audit Ledger</b><br/><i>SHA-256 linked · product line_items · verify_chain()</i>")]
-        Vec[("<b>pgvector index</b><br/><i>MiniLM catalog embeddings · semantic search</i>")]
-    end
-    MCP <-->|"catalog · availability"| PG
-    MCP -->|"semantic nearest-neighbour"| Vec
-    MandateEP --> PG
-    PayOrch -.->|"Payment Mandate — closes the AP2 chain"| PG
-    Precheck -.->|"session_created"| Audit
-    MCP -.->|"cart_built · gate_decision (+ product detail)"| Audit
-    PayOrch -.->|"token_issued · payment_effect"| Audit
-    AuditEP --> Audit
-
-    subgraph EXPLAIN["🗣️ Explanation Service — Python"]
-        Narrator["<b>Audit Narrator</b><br/><i>describes, NEVER decides · narrative lives outside the hash</i>"]
-    end
-    Audit -.->|"fire-and-forget, async"| Narrator
-    Narrator -.->|"plain-language sentence"| Audit
-    Audit ==>|"verify_chain() = PASS"| AuditUI
-
-    Human -.->|"REVOKE — next attempt blocked"| MandateEP
-    MandateEP -.->|"revoked_at"| PG
-
-    subgraph OBS["📊 Observability"]
-        OTel["<b>OpenTelemetry → Collector → Tempo → Grafana</b><br/><i>money-path traces: agent → MCP → kernel → Razorpay</i>"]
-    end
-    AGENT -.-> OTel
-    STORE -.-> OTel
-    EXEC -.-> OTel
-
-    classDef rust fill:#ffedd5,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
-    classDef python fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a,stroke-width:1.5px
-    classDef frontend fill:#ede9fe,stroke:#6d28d9,color:#4c1d95,stroke-width:1.5px
-    classDef db fill:#dcfce7,stroke:#15803d,color:#14532d,stroke-width:1.5px
-    classDef kernel fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d,stroke-width:3px
-    classDef workflow fill:#ccfbf1,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
-    classDef external fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e,stroke-width:1.5px
-    classDef obs fill:#f1f5f9,stroke:#475569,color:#1e293b,stroke-width:1.5px
-    classDef human fill:#ffffff,stroke:#111827,color:#111827,stroke-width:2px
-
-    class Human human
-    class MandateUI,ShopUI,AuditUI frontend
-    class Identity,MandateEP,AuditEP,WebhookEP,MCP,Discovery2,PayOrch,Token,Signing,Reserve rust
-    class Precheck,Orchestrator,Workers,CampaignEng,Gemini,Relevance,Upsell,Confidence,Narrator python
-    class Kernel kernel
-    class Approval workflow
-    class Razorpay external
-    class PG,Audit,Vec db
-    class OTel obs
-
-    style CLIENT fill:#faf5ff,stroke:#c4b5fd,color:#4c1d95
-    style GATEWAY fill:#fff7ed,stroke:#fdba74,color:#7c2d12
-    style AGENT fill:#eff6ff,stroke:#93c5fd,color:#1e3a8a
-    style ML fill:#eff6ff,stroke:#93c5fd,color:#1e3a8a
-    style STORE fill:#fff7ed,stroke:#fdba74,color:#7c2d12
-    style TRUST fill:#fef2f2,stroke:#fca5a5,color:#7f1d1d
-    style EXEC fill:#fff7ed,stroke:#fdba74,color:#7c2d12
-    style WF fill:#f0fdfa,stroke:#5eead4,color:#134e4a
-    style DATA fill:#f0fdf4,stroke:#86efac,color:#14532d
-    style EXPLAIN fill:#eff6ff,stroke:#93c5fd,color:#1e3a8a
-    style OBS fill:#f8fafc,stroke:#cbd5e1,color:#1e293b
+  The AI layer (Python services):
+    agent/  ── precheck · orchestrator · base_agent · workers (discovery / cart_composer / clarification)
+    relevance · upsell · confidence ── the three trained ML models
+    explain/  ── the audit-trail narrator          campaign/ ── merchant offer engine
+    workflows/ ── Temporal purchase-approval workflow
 ```
 
-*Standalone annotated version with a stage-by-stage walkthrough:*
-**[`docs/ARCHITECTURE_DIAGRAM.md`](docs/ARCHITECTURE_DIAGRAM.md)**. *Prose deep
-dive on every crate, service, migration, and the AP2/ACP protocol mapping:*
-**[`docs/ARCHITECTURE_END_TO_END.md`](docs/ARCHITECTURE_END_TO_END.md)**.
+- **Two front doors, one trust core.** The frontend talks to the **gateway** (`:8080`, all mandate/session/audit/money-adjacent reads and the webhook) and the **agent API** (`:8092`, running a goal and approving). Neither can move money directly.
+- **The agent's only spending path is `checkout`**, exposed by the **storefront MCP** (`:8081`). `checkout` submits a cart to the **kernel** — it never pays. Only when the kernel *authorizes* does the **execution** plane call Razorpay.
+- **The kernel is pure.** No database, no network, ever. It takes `(cart, mandate, running_spend, now)` and returns `Approved(Authorization)` or `Refused(RefusalReason)`. This is what makes the money path deterministic and exhaustively testable.
+- **Everything is scoped to a signed mandate and a long-lived session**, so `running_spend` accumulates correctly across multiple purchases and the cumulative cap is genuinely enforced — not reset per purchase.
 
-## Screenshots
+### The nine kernel bounds (checked in this order; the first failure is the one cited)
 
-<!-- Drop the three PNGs into docs/screenshots/ (see that folder's README for
-     exact capture steps) and they render here automatically. -->
+`mandate_revoked` → `signature_invalid` → `mandate_expired` → `cart_integrity_mismatch` → `category_not_allowed` → `merchant_not_allowed` → `over_per_txn_cap` → `over_cumulative_budget` → `requires_human_afa` (the last routes to **`needs_human`**, not a refusal).
 
-| Consent & Mandate Console | Conversational Shop Console | Hash-verified Audit Trail |
-|:---:|:---:|:---:|
-| <img src="docs/screenshots/mandate-console.png" alt="Consent & Mandate Console" width="270"> | <img src="docs/screenshots/shop-console.png" alt="Shop Console" width="270"> | <img src="docs/screenshots/audit-trail.png" alt="Audit Trail" width="270"> |
-| Sign a bounded spending mandate — budget, per-txn cap, categories, TTL — with a live authority-contract preview and the ₹15,000 AFA guarantee. | A natural-language goal drives the live 6-node pipeline; the agent offers real options and never guesses, gated by the kernel before any charge. | Every rupee, grouped by cart: the real product, the narrated reason, the SHA-256 chain link, and a verified badge. |
+### Purchase-session state machine
 
-## Features
+`DELEGATED → SHOPPING → CART_BUILT → GATING → AUTHORIZED → PAYING → COMPLETED`, with the first-class off-ramps `REFUSED` (typed reason), `NEEDS_HUMAN` (> ₹15,000 or low confidence), and `REVOKED`, plus the conversational `CLARIFY` / `CHOOSE` states.
 
-- **Agent-readable catalog** — a live MCP JSON-RPC surface (`search_catalog`,
-  `get_availability`, `get_variants`, `create_cart`, `checkout`) over 2,950
-  real products, plus `agents.txt`, an ARD manifest, schema.org JSON-LD, and a
-  product feed. Hybrid pgvector-semantic + lexical retrieval with a trained
-  relevance reranker and a relevance-margin filter that drops off-topic
-  near-misses.
-- **Conversational, multi-product checkout** — a goal can name several products
-  ("shoes *and* a phone case"); each one gets its own explicit confirmation,
-  never auto-picked. Refining an open choice ("actually, under ₹2,000")
-  continues the same exchange in place.
-- **Upsell / cross-sell** — a trained co-purchase model proposes a genuine,
-  value-ranked complement with a stated reason — never added without an
-  explicit accept.
-- **Campaign orchestrator** — a deterministic rule engine (never an LLM, never
-  money) surfaces in-app win-back / complete-the-set nudges that run through the
-  *same* kernel-gated pipeline as any purchase.
-- **The Mandate & Consent Kernel** — a pure, zero-I/O Rust function; nine
-  ordered checks; **10 / 10** adversarial violations blocked with the correct
-  typed reason ([`BOUNDS_HOLD.md`](docs/BOUNDS_HOLD.md)).
-- **Hash-chained, product-detailed audit** — SHA-256 linked and tamper-evident
-  (`verify_chain()`), carrying real product name/category/price per line item;
-  an LLM narrator describes each step but never decides, and its narrative
-  lives outside the hash.
-- **Durable, crash-safe human approval** — a purchase over ₹15,000 pauses at a
-  Temporal workflow, survives a worker crash, and completes exactly once.
-- **Instant revocation** — one call, and the agent's very next attempt is
-  refused `mandate_revoked`, live.
+## Tech Stack
 
-## Edge cases & graceful failure
+| Layer | Technology |
+|---|---|
+| Trust core (Rust) | Rust 1.90, Axum 0.8, Tokio, Tower/Tower-HTTP, `sqlx` 0.8 (compile-time-checked SQL), `ed25519-dalek`, `sha2`/`hmac`, `reqwest` (rustls), `redis`, OpenTelemetry |
+| AI layer (Python) | Python 3.11, LangGraph, FastAPI + Uvicorn, XGBoost, scikit-learn, ONNX / onnxruntime, pandas/numpy, `psycopg`, `temporalio`, `anthropic`/Gemini REST |
+| Payments | Razorpay REST (test mode) — payment links + HMAC-SHA256 webhooks |
+| Database | PostgreSQL 16 + `pgvector` (catalog embeddings for semantic search) |
+| Cache / idempotency | Redis 7 |
+| Durable workflow | Temporal 1.25 (opt-in `workflow` compose profile) |
+| Observability | OpenTelemetry Collector → Tempo → Grafana |
+| Frontend | React 19, TypeScript, Vite 6, Tailwind CSS 4, `react-router-dom` 7, `lucide-react`, `motion`, Firebase (auth), Express (dev/preview host) |
+| Infra | Docker / Docker Compose |
 
-The problem statement asks for "one failure handled gracefully." This build
-treats graceful failure as a first-class, tested path — here is every case
-actually handled, with evidence:
+## Repository Structure
 
-| Scenario | Handling | Cited reason / mechanism |
+```
+paybound/
+├── crates/                      # Rust trust core (Cargo workspace)
+│   ├── common/                  #   config, telemetry (OTel), ed25519 signing, errors
+│   ├── domain/                  #   shared pure types: Paise, mandate, session state machine, verdicts
+│   ├── ledger/                  #   hash-chained audit ledger + sqlx repositories
+│   ├── reserve/                 #   Reserve-Pay ledger primitive (cumulative-cap enforcement)
+│   ├── kernel/                  #   THE MANDATE & CONSENT KERNEL — pure, zero-I/O, exhaustively tested
+│   ├── razorpay-client/         #   Razorpay REST client + HMAC webhook verification
+│   ├── execution/               #   execution plane — the ONLY component that talks to Razorpay
+│   ├── storefront-mcp/          #   MCP storefront server (5 tools + agent-discovery surface)  :8081
+│   ├── gateway/                 #   public API + webhook receiver  :8080
+│   └── harness/                 #   dev/demo binaries: adversarial, walking-skeleton, *_seed
+├── services/                    # Python AI layer
+│   ├── agent/                   #   precheck · orchestrator · base_agent · llm · mcp_client · ml_loader
+│   │   └── workers/             #   discovery · cart_composer · clarification
+│   ├── api/                     #   FastAPI agent API (run / select / upsell / approve, + SSE)  :8092
+│   ├── campaign/                #   merchant campaign / offer engine
+│   ├── relevance/               #   relevance ranker (trained on ESCI)
+│   ├── upsell/                  #   upsell model (Instacart + ESCI-C + Amazon Reviews)
+│   ├── confidence/              #   Purchase Confidence Scorer (gradient-boosted)
+│   └── explain/                 #   audit-trail LLM narrator
+├── workflows/                   # Temporal durable purchase-approval workflow (worker, activities, client)
+├── frontend/                    # React + TypeScript + Vite governance console  :5173
+│   ├── src/
+│   │   ├── pages/               #   LandingPage · LoginPage · MandatePage · ShopPage · AuditPage
+│   │   ├── components/          #   landing · mandate · shop · audit · layout · shared · auth
+│   │   ├── context/             #   AuthContext (Firebase) · MandateContext
+│   │   └── lib/                 #   api client, types, money, verdict metadata, config, SSE
+│   └── server.ts                #   Express host that serves the SPA (no mock backend)
+├── data/                        # catalog ingestion (Amazon Berkeley Objects) + pgvector embedding backfill
+├── migrations/                  # sqlx SQL migrations (0001_init … 0008_campaign_offer_category)
+├── eval/                        # evaluation harness README (adversarial battery + demo scenarios)
+├── deploy/                      # docker-compose.yml + OTel / Tempo / Grafana config
+├── scripts/                     # run_backend.sh + the four demo scripts + smoke tests
+├── proto/                       # gRPC contract stubs
+├── docs/                        # architecture, honest-metrics, bounds-hold, decisions, progress, specs
+├── .sqlx/                       # sqlx offline query cache (lets the workspace build without a live DB)
+├── Cargo.toml                   # Rust workspace manifest
+├── requirements.txt             # Python deps
+├── pyproject.toml               # ruff + pytest config
+└── .env.example                 # copy to .env and fill in
+```
+
+## Prerequisites
+
+Install these before you start:
+
+| Tool | Version | Notes |
 |---|---|---|
-| Cart exceeds the per-transaction cap | Refused, typed, before pricing against Razorpay | `over_per_txn_cap` |
-| Cumulative spend would exceed the budget | Refused before money moves | `over_cumulative_budget` |
-| Category / merchant outside the mandate | Refused, with the mandate's allow-list quoted back | `category_not_allowed` / `merchant_not_allowed` |
-| Cart total or hash doesn't match its contents | Refused — price drift / item substitution caught | `cart_integrity_mismatch` |
-| Mandate signature tampered | Refused before any other check | `signature_invalid` |
-| Mandate past its TTL | Refused | `mandate_expired` |
-| Purchase above ₹15,000 | Paused for human approval — durable, crash-safe, exactly-once | `requires_human_afa` + Temporal |
-| Human revokes mid-session | The very next attempt is refused, live | `mandate_revoked` |
-| Ambiguous goal ("something nice") | The agent asks a specific follow-up — never guesses | `CLARIFY` |
-| No match / over price cap / wrong category | A specific, actionable message naming which axis failed | `_no_match_message` |
-| Multi-item order, item 2 has one real match | Still shown as an explicit choice, not silently added | see [DECISIONS.md](docs/DECISIONS.md) |
-| Multi-item pick from a different seller | Caught immediately at selection — nothing added | `_merchant_conflict` |
-| Off-topic near-miss search results | Filtered by a relevance margin below the top match | see [DECISIONS.md](docs/DECISIONS.md) |
-| Duplicate webhook delivery | Deduplicated — processed exactly once | `webhook_event` UNIQUE |
-| Duplicate `authorize()` (retry) | Idempotent — same link, never a second charge | `ON CONFLICT` claim |
-| LLM provider outage | Deterministic heuristic parse takes over; the kernel still gates everything | `_heuristic_intent` |
-| Narrator LLM failure | Falls back to a deterministic sentence; never blocks the chain | `narrate_entry` |
-| Payment fails on Razorpay | Recorded as a clean failure — never a hallucinated success | `on_payment_failed` |
+| **Rust & Cargo** | 1.90+ | via [rustup](https://rustup.rs/) — the workspace pins `rust-version = "1.90"` |
+| **Python** | 3.11 | a **conda** environment named `paybound` is strongly recommended (the ML services use XGBoost / scikit-learn / onnxruntime) |
+| **Node.js & npm** | 18+ | for the frontend (Vite 6 / React 19) |
+| **Docker & Docker Compose** | latest | runs all infra — Postgres, Redis, Temporal, OTel/Tempo/Grafana |
+| **`sqlx-cli`** | matching `sqlx` 0.8 | to apply migrations — `cargo install sqlx-cli --no-default-features --features rustls,postgres` |
+| **A Razorpay account** | test mode | for the `rzp_test_` key ID + secret + webhook secret (free) |
+| **A Gemini API key** | — | powers the Orchestrator's goal-parsing and the audit narrator ([aistudio.google.com/apikey](https://aistudio.google.com/apikey)) |
+| **Git** | any recent | to clone the repo |
 
-## Tech stack
+> **Note on the datasets & GPU:** the product catalog comes from **Amazon Berkeley Objects** (public AWS Open Data, no login). The three ML models train on **ESCI / Instacart / Amazon Reviews** slices. Everything in this repo runs correctly **CPU-only** — a GPU only speeds up model iteration, it is never required.
+>
+> **Note on `.sqlx`:** the committed offline query cache means `cargo build` works **without a live database connection** (set `SQLX_OFFLINE=true` if your environment tries to connect at build time). A live DB is only needed to *run* the services and to *add or change* SQL queries.
 
-| Layer | Technology | Why |
-|---|---|---|
-| Trust core + money path | **Rust** — 10-crate Cargo workspace, axum, sqlx (compile-time-checked SQL) | Deterministic, memory-safe; the gate must never be wrong |
-| Agentic pipeline + ML | **Python 3.11** — FastAPI, a custom LangGraph-style orchestrator | Fast iteration, where the ML/LLM ecosystem lives |
-| Durable workflow | **Temporal** (Python SDK) | Crash-safe human-approval pauses, exactly-once execution |
-| Frontend | **React + Vite + TypeScript + Tailwind** | The console: shop, mandates, live audit trail |
-| Data | **PostgreSQL 16 + pgvector** | One relational store; a vector column for semantic search |
-| Payments | **Razorpay test-mode REST** (Payment Links, Orders, webhooks) | Real payment objects, dashboard-visible, HMAC-verified |
-| ML | **XGBoost** (relevance, confidence), a co-purchase model, **MiniLM** embeddings | Trained on Amazon ESCI, Instacart, Amazon Reviews 2023 |
-| LLM | **Google Gemini** (provider-agnostic client, heuristic fallback) | Parses goals, narrates the audit trail — never decides money outcomes |
-| Identity / crypto | **ed25519** (dalek), **SHA-256** | Signed mandates + the hash-chained audit ledger |
-| Observability | **OpenTelemetry → OTel Collector → Tempo → Grafana** | Distributed tracing on the money path |
+## Setup & Installation
 
-## Repo layout
-
-```
-crates/       Rust workspace — kernel, ledger, reserve, execution, storefront-mcp, gateway, harness, domain, common, razorpay-client
-services/     Python — agent orchestrator + workers, relevance, upsell, confidence, explain, campaign, api
-workflows/    Temporal durable-workflow spine (Python SDK)
-frontend/     React + Vite + TypeScript console (mandate, shop, audit pages)
-migrations/   sqlx SQL migrations — the full data model (8 migrations)
-data/         Catalog ingestion + embedding scripts (Amazon Berkeley Objects, Instacart)
-deploy/       docker-compose + observability config (Postgres, Redis, OTel Collector, Tempo, Grafana)
-eval/         Adversarial bounds-hold battery + demo scenario runner
-scripts/      One-command backend bring-up + scripted demo scenarios
-docs/         Architecture, decision log, progress log, honest-metrics, bounds-hold table
-```
-
-## Setup
-
-### Prerequisites
-
-Rust (stable) · Python 3.11 · Node.js 18+ · Docker · a Razorpay **test-mode**
-key pair · a Gemini API key.
-
-### 1 — Infrastructure
+### 1. Clone the repository
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d
+git clone <your-repo-url>
+cd paybound
 ```
 
-### 2 — Environment
-
-Copy `.env.example` → `.env` and fill in real values. `.env` is git-ignored —
-never commit real keys.
+### 2. Configure environment & signing key
 
 ```bash
-DATABASE_URL=postgres://paybound:paybound@localhost:5433/paybound
-PAYBOUND_DATABASE_URL=postgres://paybound:paybound@localhost:5433/paybound
-RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxxx
-RAZORPAY_KEY_SECRET=xxxxxxxxxxxxxxxxxxxxxxxx
-GEMINI_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
+cp .env.example .env
+# edit .env — fill in RAZORPAY_KEY_ID / _SECRET / _WEBHOOK_SECRET and GEMINI_API_KEY.
+# Leave the localhost DATABASE_URL / ports as-is unless you changed the compose file.
 ```
 
-### 3 — Database + catalog
+Generate the local ed25519 mandate-signing key (git-ignored, never committed — path set by `PAYBOUND_SIGNING_KEY_PATH`, default `./signing_key.ed25519`):
 
 ```bash
-cargo install sqlx-cli --no-default-features --features postgres
+openssl genpkey -algorithm ed25519 -out signing_key.ed25519
+```
+
+> **Tip — rehearse without spending your test-mode payment-link quota:** set `PAYBOUND_DRY_RUN=true` in `.env`. Everything is genuine (kernel gate, audit chain, AUTHORIZED / NEEDS_HUMAN-approve) *except* the actual Razorpay call, which is skipped and shown as a DRY RUN badge. Restore to `false` for real test-mode links.
+
+### 3. Start infrastructure
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile workflow up -d
+```
+
+This brings up Postgres 16 + pgvector (host port **5433**), Redis, the OTel collector, Tempo, Grafana, and — because of `--profile workflow` — the Temporal server + UI. (Drop `--profile workflow` if you don't need the durable > ₹15,000 approval demo.)
+
+### 4. Apply the database schema
+
+Migrations are **not** run automatically — apply them once before the first launch:
+
+```bash
+cargo install sqlx-cli --no-default-features --features rustls,postgres   # one-time, if not already installed
+export DATABASE_URL="postgres://paybound:paybound@localhost:5433/paybound"  # PowerShell: $env:DATABASE_URL="..."
 sqlx migrate run
-python data/ingest_abo.py          # seed the catalog
-python data/embed_catalog.py       # backfill semantic-search embeddings
 ```
 
-### 4 — Build & test the Rust core
+This applies every file in `migrations/` in order (`0001_init` … `0008_campaign_offer_category`). Re-running later is safe — already-applied migrations are skipped.
+
+### 5. Set up the Python AI layer (conda)
 
 ```bash
-cargo build --workspace && cargo test --workspace
+conda create -n paybound python=3.11 -y
+conda activate paybound
+pip install -r requirements.txt
 ```
 
-### 5 — Python environment
+Install PyTorch separately for your platform if you plan to (re)train models — a CPU build is fine (`pip install torch --index-url https://download.pytorch.org/whl/cpu`).
+
+### 6. Ingest the catalog (and embeddings for semantic search)
 
 ```bash
-conda create -n paybound python=3.11 && conda activate paybound
-pip install -r requirements.txt && pytest services/
+conda activate paybound
+python data/ingest_abo.py                 # ~1000 items into catalog_item (real ABO attributes; ₹ prices synthesized)
+python data/embed_catalog.py              # backfill pgvector embeddings so search is meaning-based, not keyword-only
 ```
 
-### 6 — Frontend
+> The trained model artifacts live under `services/{relevance,upsell,confidence}/artifacts/`. If you want to (re)train them yourself: `python -m services.relevance.train`, `python -m services.upsell.train`, `python -m services.confidence.train`. Each service **degrades to a heuristic** if its artifact is missing, so the product still runs before you train anything.
+
+### 7. Build the backend
 
 ```bash
-cd frontend && npm install && npm run dev     # http://localhost:5173
+cargo build -p storefront-mcp -p gateway
 ```
 
-### 7 — Bring up the whole backend with one command
+### 8. Install frontend dependencies
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+## Running the Project
+
+### Fastest path — one command starts the whole backend
 
 ```bash
 bash scripts/run_backend.sh
 ```
 
-Starts `storefront-mcp` (:8081), `gateway` (:8080), and the agent API (:8092)
-together; logs land in `/tmp/pb_backend_*.log`.
+This frees any stale ports, builds and starts **storefront-mcp** (`:8081`), the **gateway** (`:8080`), and the **agent API** (`:8092`), waits for all three health checks, and prints a ready banner (including whether `PAYBOUND_DRY_RUN` is on). It assumes infra is up (step 3), `.env` is filled, the `paybound` conda env exists, and the catalog is ingested. `Ctrl+C` stops all three; logs are at `/tmp/pb_backend_{storefront,gateway,agent_api}.log`.
 
-## Running the demos
-
-Scripted, deterministic, no manual setup beyond the steps above:
+Then, in a separate terminal, start the frontend:
 
 ```bash
-bash scripts/agent_demo.sh        # happy path + upsell, and a graceful over-budget refusal
-bash scripts/revocation_demo.sh   # live revocation: buy → revoke → next attempt refused
-bash scripts/durable_demo.sh      # >₹15,000 pause, worker crash + restart, resumes and completes
-bash scripts/explain_demo.sh      # the narrated, hash-verified audit chain for a real purchase
-
-cargo run -p harness --bin walking-skeleton   # one command, the entire spine, end to end
-cargo run -p harness --bin adversarial        # the 10-case bounds-hold battery → docs/BOUNDS_HOLD.md
+cd frontend
+npm run dev
 ```
+
+Open **http://localhost:5173** — the frontend talks directly to the gateway (`:8080`) and agent API (`:8092`); override those with `VITE_GATEWAY_URL` / `VITE_AGENT_URL` if the backend runs elsewhere.
+
+### Quick smoke test from the terminal
+
+Mandates require a bearer token — mint one from `/identity` first:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/identity | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+curl -X POST http://localhost:8080/mandates \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"budget_total_paise":1000000,"per_txn_cap_paise":600000}'
+```
+
+### The four demo scenarios (deterministic, scripted)
+
+```bash
+scripts/agent_demo.sh        # 1 & 2: happy path + accepted upsell → AUTHORIZED + real link; and a graceful over-budget REFUSAL
+scripts/revocation_demo.sh   # 3: buy → human revokes mid-session → next attempt blocked
+scripts/durable_demo.sh      # 4: > ₹15,000 → NEEDS_HUMAN pause, survives a crash, resumes on approval
+```
+
+Supporting demos: `scripts/walking_skeleton.sh` (a full purchase + hash-verified audit chain), `scripts/explain_demo.sh` (the LLM-narrated audit trail), `scripts/smoke_storefront.sh` (the five MCP tools over HTTP).
+
+### Service map (once running)
+
+| Service | URL |
+|---|---|
+| Frontend (governance console) | http://localhost:5173 |
+| Gateway API | http://localhost:8080 |
+| Gateway health | http://localhost:8080/health |
+| Storefront MCP | http://localhost:8081 |
+| Storefront health | http://localhost:8081/health |
+| Agent API | http://localhost:8092 |
+| Agent API health | http://localhost:8092/health |
+| Grafana (traces) | http://localhost:3000 |
+| Temporal UI | http://localhost:8233 |
+| Postgres | localhost:5433 |
+| Redis | localhost:6379 |
+
+## Docker Setup & Execution
+
+Docker runs the **infrastructure** — Postgres, Redis, Temporal, and the OTel/Tempo/Grafana observability stack. The Rust services, Python AI layer, and frontend run natively (as above) for fastest local iteration and full model/OCR access.
+
+```bash
+# Core infra only (Postgres, Redis, OTel, Tempo, Grafana):
+docker compose -f deploy/docker-compose.yml up -d
+
+# Include the durable-workflow stack (Temporal + Temporal UI) for the > ₹15,000 approval demo:
+docker compose -f deploy/docker-compose.yml --profile workflow up -d
+```
+
+Check status / logs:
+
+```bash
+docker compose -f deploy/docker-compose.yml ps
+docker compose -f deploy/docker-compose.yml logs -f postgres
+```
+
+Stop / reset:
+
+```bash
+docker compose -f deploy/docker-compose.yml down       # stop, keep data volumes
+docker compose -f deploy/docker-compose.yml down -v     # stop AND wipe Postgres + Tempo volumes (fresh DB next start)
+```
+
+> Postgres is published on **5433** (host) → 5432 (container) specifically to avoid clashing with a locally-installed Postgres. Redis is on 6379, OTLP on 4317/4318, Tempo query on 3200, Grafana on 3000, Temporal on 7233, and the Temporal UI on 8233.
+
+## Environment Variables Reference
+
+All live in `.env` at the repo root (copy from `.env.example`). The Rust services read `PAYBOUND_*`; the Python services and `run_backend.sh` read plain `DATABASE_URL` — set both DB vars to the same value.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PAYBOUND_GATEWAY_PORT` | `8080` | Gateway HTTP port |
+| `DATABASE_URL` | `postgres://paybound:paybound@localhost:5433/paybound` | Postgres URL (read by Python services + scripts) |
+| `PAYBOUND_DATABASE_URL` | *(same as above)* | Postgres URL (read by the Rust services) |
+| `PAYBOUND_REDIS_URL` | `redis://localhost:6379` | Redis (idempotency keys, spend counters) |
+| `PAYBOUND_OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry collector (OTLP gRPC) |
+| `PAYBOUND_SERVICE_NAME` | `paybound-gateway` | Service name reported in traces |
+| `RAZORPAY_KEY_ID` | — | Test-mode key ID (`rzp_test_…`) — Razorpay → Test Mode → Settings → API Keys |
+| `RAZORPAY_KEY_SECRET` | — | Test-mode key secret |
+| `RAZORPAY_WEBHOOK_SECRET` | — | Secret for HMAC-SHA256 webhook verification |
+| `PAYBOUND_DRY_RUN` | `false` | `true` = skip the real Razorpay call (rehearse without spending payment-link quota); everything else stays genuine |
+| `GEMINI_API_KEY` | — | LLM key for the Orchestrator's goal-parsing and the audit narrator |
+| `PAYBOUND_SIGNING_KEY_PATH` | `./signing_key.ed25519` | Path to the local ed25519 mandate-signing private key (git-ignored) |
+
+**Frontend overrides** (optional, Vite env): `VITE_GATEWAY_URL` (default `http://localhost:8080`) and `VITE_AGENT_URL` (default `http://localhost:8092`). Firebase config for auth lives in `frontend/src/lib/firebase.ts`.
+
+## API Access
+
+Three network surfaces. The frontend calls the **gateway** and the **agent API**; the **storefront MCP** is the agent's channel.
+
+**Gateway — `http://localhost:8080`** (identity, mandates, sessions, audit, money):
+
+| Method + path | Purpose |
+|---|---|
+| `POST /identity` | Mint a bearer token (ownership identity for mandates) |
+| `POST /mandates` | Create a signed Intent Mandate + its bound session |
+| `GET /mandates` | List mandates with live spend + session state |
+| `GET /sessions/{id}` | A session's live state + spend + mandate bounds |
+| `GET /sessions/{id}/audit` | The hash-chained, narrated audit trail for a session |
+| `GET /audit` · `GET /audit/entries/{id}/context` | The global audit log + a single entry's context |
+| `POST /mandates/{id}/revoke` | Instant kill-switch |
+| `GET /mandates/{id}/runs` · `DELETE /mandates/{id}/runs/{run_id}` | List / delete a mandate's shopping runs |
+| `GET /catalog/categories` | Distinct categories for the mandate form |
+| `POST /webhooks/razorpay` | Razorpay → Paybound (HMAC-verified; not called by the frontend) |
+
+**Agent API — `http://localhost:8092`** (run the agent on a goal):
+
+| Method + path | Purpose |
+|---|---|
+| `POST /sessions/{id}/run` · `/run/stream` | Run the agent on one NL goal (plus an SSE progress stream) |
+| `POST /sessions/{id}/select` · `/select/stream` | Choose among options in a `CHOOSE` step |
+| `POST /sessions/{id}/upsell` · `/upsell/stream` | Accept / decline the composed upsell |
+| `POST /sessions/{id}/approve` | Resume a `NEEDS_HUMAN` session (the > ₹15,000 gate) |
+| `GET /sessions/{id}/campaign` · `POST /sessions/{id}/campaign/{offer_id}/resolve` | Fetch / resolve a merchant campaign offer |
+
+**Storefront MCP — `http://localhost:8081`** (the agent's channel): `POST /mcp` (JSON-RPC: `search_catalog`, `get_availability`, `get_variants`, `create_cart`, `checkout`), plus the discovery surface `GET /.well-known/agents.txt`, `GET /.well-known/ard.json`, `GET /feed.json`, `GET /schema/{item_id}`.
+
+## What's Real vs. Simulated
+
+The track rewards honesty, and so does this build — the full breakdown is in [`docs/HONEST_METRICS.md`](docs/HONEST_METRICS.md). In short:
+
+**Real (not mocked):** Razorpay test-mode payment links; HMAC-verified webhooks; the five MCP storefront tools over a real catalog DB; the pure exhaustively-tested kernel; ed25519-signed mandates; the SHA-256 hash-chained audit ledger with `verify_chain`; the ₹15,000 AFA gate; idempotency keys + single-use tokens; the durable Temporal pause; and the three trained ML models.
+
+**Simulated (labelled everywhere):** the UPI **Reserve-Pay** fund-block (no public self-serve API exists — it powers Razorpay's closed pilot, so it's modelled here as a ledger primitive); catalog **₹ prices** (ABO ships real attributes but no price, so prices are deterministically synthesized); and, in the automated scripts only, the webhook receipt is driven by a correctly-HMAC-signed synthetic event (the real webhook fires in the live venue).
+
+## Further Reading
+
+| Doc | Covers |
+|---|---|
+| [`docs/ARCHITECTURE_END_TO_END.md`](docs/ARCHITECTURE_END_TO_END.md) | Full end-to-end architecture walkthrough |
+| [`docs/ARCHITECTURE_AND_FRONTEND_SPEC.md`](docs/ARCHITECTURE_AND_FRONTEND_SPEC.md) | Component inventory, API contract, TypeScript shapes, frontend spec + design language |
+| [`docs/BOUNDS_HOLD.md`](docs/BOUNDS_HOLD.md) | The adversarial "every bound holds under attack" results table |
+| [`docs/HONEST_METRICS.md`](docs/HONEST_METRICS.md) | Real vs. simulated, stated plainly |
+| [`docs/INTEGRATION_MAP.md`](docs/INTEGRATION_MAP.md) | The frontend ↔ backend integration audit + wiring map |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) · [`docs/PROGRESS.md`](docs/PROGRESS.md) | Build-decision log + phase-by-phase progress with test results |
+| [`eval/README.md`](eval/README.md) | The evaluation harness — adversarial battery + the four demo scenarios |
 
 ## Testing
 
 ```bash
-cargo test --workspace                     # Rust — 60 tests (kernel, ledger, reserve, execution, storefront, gateway)
-cargo clippy --workspace -- -D warnings
-pytest services/                           # Python — 69 tests (orchestrator, workers, campaign, ML, workflow)
-ruff check services/
-cd frontend && npm run test && npm run lint # Frontend — 33 tests + full type check
+# Rust — kernel bounds, reserve property test, audit tamper-detection, storefront/execution/gateway integration
+export DATABASE_URL="postgres://paybound:paybound@localhost:5433/paybound"
+cargo test --workspace
+
+# The adversarial battery — asserts every violation is blocked at the gate with the correct typed reason
+cargo run -p harness --bin adversarial      # writes docs/BOUNDS_HOLD.md; exits non-zero if any bound fails
+
+# Python — pre-check zero-LLM, ambiguity→clarify, needs-human pause/resume, workers-cannot-checkout, durable workflow
+conda activate paybound
+pytest services workflows
+
+# Frontend — unit tests + type-check
+cd frontend
+npm test
+npm run lint       # tsc --noEmit
 ```
 
-## Real vs. simulated
+## Troubleshooting
 
-Stated plainly, because the track rewards honesty over pretending.
-
-**Real, not mocked:** Razorpay test-mode payment links and webhooks
-(HMAC-verified), the full Mandate & Consent Kernel, ed25519-signed mandates, the
-SHA-256 audit chain, the real ₹15,000 RBI AFA threshold, three models trained on
-public datasets (Amazon ESCI, Instacart, Amazon Reviews 2023).
-
-**Simulated, and labelled everywhere:** UPI Reserve-Pay's fund-blocking —
-Razorpay exposes no public self-serve API for it (it powers their closed Claude
-pilot) — modelled as a ledger primitive (reserve → multi-debit → revoke), the
-same loop that today runs only in that closed pilot, built here in the open.
-Catalog ₹ prices are synthesized (Amazon Berkeley Objects has real
-titles/categories/variants but no price data), deterministically seeded per item.
-
-Full breakdown: [`docs/HONEST_METRICS.md`](docs/HONEST_METRICS.md).
-
-## Documentation
-
-| Doc | What's in it |
-|---|---|
-| [`docs/ARCHITECTURE_DIAGRAM.md`](docs/ARCHITECTURE_DIAGRAM.md) | The full end-to-end diagram, annotated stage by stage |
-| [`docs/ARCHITECTURE_END_TO_END.md`](docs/ARCHITECTURE_END_TO_END.md) | Prose deep-dive: every crate/service, the workflow, the AP2/ACP mapping, the PS scorecard |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Every non-obvious engineering decision, dated, with reasoning + verification |
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | Phase-by-phase build log with STOP-AND-TEST results |
-| [`docs/HONEST_METRICS.md`](docs/HONEST_METRICS.md) | The full real-vs-simulated ledger |
-| [`docs/BOUNDS_HOLD.md`](docs/BOUNDS_HOLD.md) | The adversarial battery — every attempted violation and its typed refusal |
-| [`docs/INTEGRATION_MAP.md`](docs/INTEGRATION_MAP.md) | The frontend-to-backend wiring audit |
-
----
-
-<div align="center">
-
-**Razorpay AI Buildathon · Track 1 — AI Growth & Agentic Commerce**
-
-*The trust layer is the product. The shopping is the demo.*
-
-</div>
+- **The backend "starts then instantly stops."** A stale process from a previous run is still bound to `:8080`/`:8081`/`:8092`. `run_backend.sh` auto-frees these ports on start; if you launched a service manually, kill the old process first (the script's ready banner won't print if a health check never passes).
+- **A Rust service panics on boot with a missing-table / relation error.** Migrations haven't been applied — run `sqlx migrate run` with `DATABASE_URL` set (Setup step 4). This is the #1 first-run failure on a fresh clone.
+- **`cargo build` tries to reach a database and fails.** Build with the committed offline cache: `SQLX_OFFLINE=true cargo build`. A live DB is only needed to run the services or to add/change SQL queries.
+- **The agent API is unhealthy / won't start.** Make sure the `paybound` conda env is activated and `pip install -r requirements.txt` completed, and that `STOREFRONT_URL` points at a running storefront-mcp (the script sets this for you).
+- **Search returns weak / keyword-only results.** The pgvector embeddings weren't backfilled — run `python data/embed_catalog.py` after ingesting the catalog.
+- **Approved purchases show a "DRY RUN" badge instead of a real payment link.** `PAYBOUND_DRY_RUN=true` is set in `.env`. Set it to `false` and restart the backend for real test-mode links.
+- **No payment link is created / Razorpay calls fail.** Confirm `RAZORPAY_KEY_ID` / `_SECRET` are valid **test-mode** keys and that you haven't exhausted the test account's payment-link quota (use dry-run mode to rehearse).
+- **The frontend loads but every call fails with a CORS or network error.** Confirm both the gateway (`:8080`) and agent API (`:8092`) are up, and that `VITE_GATEWAY_URL` / `VITE_AGENT_URL` match where they're actually running.
+- **The > ₹15,000 approval demo hangs.** The Temporal server isn't running — start infra with `--profile workflow` (Setup step 3) and check the Temporal UI at http://localhost:8233.
+- **Traces don't appear in Grafana.** Confirm the OTel collector is up (`docker compose ps`) and `PAYBOUND_OTLP_ENDPOINT` points at `http://localhost:4317`. Note the known limitation (in `HONEST_METRICS.md`): Rust spans currently don't group under the agent's trace id, though per-service traces and the money-path span tree are present.
