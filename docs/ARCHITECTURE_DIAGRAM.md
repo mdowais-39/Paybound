@@ -2,20 +2,20 @@
 
 ```mermaid
 flowchart TD
-    Client["Client Devices<br/>Web · Mobile"]
+    Client["💻 🖥️ 📱<br/><b>Client Devices</b><br/>Web · Mobile"]
 
     subgraph Backend["Backend"]
         direction TB
-        Gateway["Gateway<br/>Rust"]
-        Agent["Agent API<br/>Python"]
-        Storefront["Storefront<br/>MCP · Rust"]
-        Kernel["Kernel<br/>Gate"]
-        Execution["Execution<br/>Rust"]
-        Temporal["Temporal"]
-        PG[("PostgreSQL")]
+        Gateway["🚪<br/><b>Gateway</b><br/>Rust"]
+        Agent["🤖<br/><b>Agent API</b><br/>Python"]
+        Storefront["🏬<br/><b>Storefront</b><br/>MCP · Rust"]
+        Kernel["🔐<br/><b>Kernel</b><br/>Gate"]
+        Execution["💳<br/><b>Execution</b><br/>Rust"]
+        Temporal["⏱️<br/><b>Temporal</b>"]
+        PG[("🗄️<br/><b>PostgreSQL</b>")]
     end
 
-    Razorpay["Razorpay"]
+    Razorpay["🏦<br/><b>Razorpay</b>"]
 
     Client <-->|"①"| Gateway
     Client <-->|"②"| Agent
