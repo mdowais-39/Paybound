@@ -20,7 +20,7 @@
   <img alt="React" src="https://img.shields.io/badge/frontend-React%20%2F%20TypeScript%20%2F%20Vite-61DAFB?logo=react&logoColor=black">
   <img alt="Postgres" src="https://img.shields.io/badge/database-PostgreSQL%2016%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white">
   <img alt="Razorpay" src="https://img.shields.io/badge/payments-Razorpay%20test%20mode-0C2451?logo=razorpay&logoColor=white">
-  <img alt="Status" src="https://img.shields.io/badge/status-hackathon%20build-orange">
+  
 </p>
 
 ---
@@ -82,48 +82,56 @@ The frontend is a **governance console**, not a shopping cart: a place to *set a
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    Client["💻 🖥️ 📱<br/><b>Client Devices</b><br/>Web · Mobile"]
+```
+                        ┌───────────────────────────────────────────┐
+                        │  React / TypeScript / Vite frontend (5173) │
+                        │  Governance console: /mandate /shop /audit │
+                        └───────┬───────────────────────────┬────────┘
+                                │ REST + SSE                 │ REST
+                                ▼                            ▼
+              ┌──────────────────────────┐      ┌──────────────────────────────┐
+              │  Rust · Axum GATEWAY      │      │  Python · FastAPI AGENT API    │
+              │        (port 8080)        │      │        (port 8092)             │
+              │  identity · mandates ·    │      │  run / select / upsell /       │
+              │  sessions · audit chain · │      │  approve a goal (+ SSE stream) │
+              │  revoke · categories ·    │      │  campaign offers               │
+              │  Razorpay webhook         │      │  wraps the Orchestrator        │
+              └──────┬─────────────┬──────┘      └───────────────┬────────────────┘
+                     │             │                             │ MCP (JSON-RPC)
+                     │             │                             ▼
+                     │             │             ┌──────────────────────────────┐
+                     │             │             │  Rust · Axum STOREFRONT-MCP    │
+                     │             │             │        (port 8081)             │
+                     │             │             │  5 tools · discovery surface   │
+                     │             │             │  checkout ─► KERNEL (gate)     │
+                     │             │             │  authorized ─► EXECUTION ─► 💳  │
+                     │             │             └───────────────┬────────────────┘
+                     ▼             ▼                             ▼
+        ┌────────────────────────────────┐        ┌──────────────────────────────┐
+        │  PostgreSQL 16 + pgvector (5433)│        │  Razorpay TEST MODE (real API) │
+        │  mandates · sessions · carts ·  │        │  payment links · HMAC webhooks │
+        │  gate_decisions · reserve_blocks│        └──────────────────────────────┘
+        │  payment_effects · audit_ledger │
+        └────────────────────────────────┘   Redis (6379): idempotency keys + spend counters
+                                              Temporal (7233): durable NEEDS_HUMAN pause  [--profile workflow]
+                                              OTel→Tempo→Grafana (4317 / 3200 / 3000): traces
 
-    subgraph Backend["Backend"]
-        direction TB
-        Gateway["🚪<br/><b>Gateway</b><br/>Rust"]
-        Agent["🤖<br/><b>Agent API</b><br/>Python"]
-        Storefront["🏬<br/><b>Storefront</b><br/>MCP · Rust"]
-        Kernel["🔐<br/><b>Kernel</b><br/>Gate"]
-        Execution["💳<br/><b>Execution</b><br/>Rust"]
-        Temporal["⏱️<br/><b>Temporal</b>"]
-        PG[("🗄️<br/><b>PostgreSQL</b>")]
-    end
+  The trust core (Rust crates):
+    kernel  ── pure, zero-I/O gate (9 bounds)      reserve  ── Reserve-Pay ledger (cumulative cap)
+    ledger  ── hash-chained audit + repos          execution ── the ONLY caller of Razorpay
+    domain  ── shared types (Paise, state machine, mandate)   razorpay-client ── REST + HMAC verify
 
-    Razorpay["🏦<br/><b>Razorpay</b>"]
-
-    Client <-->|"①"| Gateway
-    Client <-->|"②"| Agent
-    Agent <-->|"③"| Storefront
-    Storefront <-->|"④"| Kernel
-    Kernel <-->|"⑤"| Execution
-    Kernel <-->|"⑥"| Temporal
-    Execution <-->|"⑦"| Razorpay
-    Gateway <-->|"⑧"| PG
-    Storefront <-->|"⑧"| PG
-    Execution <-->|"⑧"| PG
-
-    classDef box fill:#d6e8f7,stroke:#2c3e50,stroke-width:1.2px,color:#000
-    classDef ext fill:#f2f2f2,stroke:#2c3e50,stroke-width:1.2px,color:#000
-
-    class Gateway,Agent,Storefront,Kernel,Execution,Temporal,PG box
-    class Client,Razorpay ext
-    style Backend fill:#ffffff,stroke:#2c3e50,stroke-width:1.2px
+  The AI layer (Python services):
+    agent/  ── precheck · orchestrator · base_agent · workers (discovery / cart_composer / clarification)
+    relevance · upsell · confidence ── the three trained ML models
+    explain/  ── the audit-trail narrator          campaign/ ── merchant offer engine
+    workflows/ ── Temporal purchase-approval workflow
 ```
 
-① mandate + revoke + audit · ② goal · ③ MCP tool calls · ④ checkout →
-evaluate · ⑤ approved → charge · ⑥ &gt;₹15,000 pause/resume · ⑦ payment link +
-webhook · ⑧ persist + audit chain
-
-**Rust crates:** `kernel` · `reserve` · `ledger` · `execution` · `domain` · `razorpay-client` · `gateway` · `storefront-mcp` · `harness` · `common`
-**Python services:** `agent/` · `relevance` · `upsell` · `confidence` · `explain/` · `campaign/` · `workflows/`
+- **Two front doors, one trust core.** The frontend talks to the **gateway** (`:8080`, all mandate/session/audit/money-adjacent reads and the webhook) and the **agent API** (`:8092`, running a goal and approving). Neither can move money directly.
+- **The agent's only spending path is `checkout`**, exposed by the **storefront MCP** (`:8081`). `checkout` submits a cart to the **kernel** — it never pays. Only when the kernel *authorizes* does the **execution** plane call Razorpay.
+- **The kernel is pure.** No database, no network, ever. It takes `(cart, mandate, running_spend, now)` and returns `Approved(Authorization)` or `Refused(RefusalReason)`. This is what makes the money path deterministic and exhaustively testable.
+- **Everything is scoped to a signed mandate and a long-lived session**, so `running_spend` accumulates correctly across multiple purchases and the cumulative cap is genuinely enforced — not reset per purchase.
 
 ### The nine kernel bounds (checked in this order; the first failure is the one cited)
 
@@ -141,7 +149,7 @@ webhook · ⑧ persist + audit chain
 | AI layer (Python) | Python 3.11, LangGraph, FastAPI + Uvicorn, XGBoost, scikit-learn, ONNX / onnxruntime, pandas/numpy, `psycopg`, `temporalio`, `anthropic`/Gemini REST |
 | Payments | Razorpay REST (test mode) — payment links + HMAC-SHA256 webhooks |
 | Database | PostgreSQL 16 + `pgvector` (catalog embeddings for semantic search) |
-| Idempotency | PostgreSQL `ON CONFLICT` claim + `UNIQUE` delegated-token constraint (Redis 7 is provisioned in compose but unused on the live path) |
+| Cache / idempotency | Redis 7 |
 | Durable workflow | Temporal 1.25 (opt-in `workflow` compose profile) |
 | Observability | OpenTelemetry Collector → Tempo → Grafana |
 | Frontend | React 19, TypeScript, Vite 6, Tailwind CSS 4, `react-router-dom` 7, `lucide-react`, `motion`, Firebase (auth), Express (dev/preview host) |
@@ -184,7 +192,7 @@ paybound/
 ├── eval/                        # evaluation harness README (adversarial battery + demo scenarios)
 ├── deploy/                      # docker-compose.yml + OTel / Tempo / Grafana config
 ├── scripts/                     # run_backend.sh + the four demo scripts + smoke tests
-├── proto/                       # (empty — reserved; no gRPC on the live path)
+├── proto/                       # gRPC contract stubs
 ├── docs/                        # architecture, honest-metrics, bounds-hold, decisions, progress, specs
 ├── .sqlx/                       # sqlx offline query cache (lets the workspace build without a live DB)
 ├── Cargo.toml                   # Rust workspace manifest
@@ -385,7 +393,7 @@ All live in `.env` at the repo root (copy from `.env.example`). The Rust service
 | `PAYBOUND_GATEWAY_PORT` | `8080` | Gateway HTTP port |
 | `DATABASE_URL` | `postgres://paybound:paybound@localhost:5433/paybound` | Postgres URL (read by Python services + scripts) |
 | `PAYBOUND_DATABASE_URL` | *(same as above)* | Postgres URL (read by the Rust services) |
-| `PAYBOUND_REDIS_URL` | `redis://localhost:6379` | Redis connection string (provisioned; not used on the live path) |
+| `PAYBOUND_REDIS_URL` | `redis://localhost:6379` | Redis (idempotency keys, spend counters) |
 | `PAYBOUND_OTLP_ENDPOINT` | `http://localhost:4317` | OpenTelemetry collector (OTLP gRPC) |
 | `PAYBOUND_SERVICE_NAME` | `paybound-gateway` | Service name reported in traces |
 | `RAZORPAY_KEY_ID` | — | Test-mode key ID (`rzp_test_…`) — Razorpay → Test Mode → Settings → API Keys |
